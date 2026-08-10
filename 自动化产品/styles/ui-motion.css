@@ -2499,7 +2499,7 @@ body.workspace-shell-v2[data-zone="agent"] .agc-account-type {
   flex: none;
   color: #778397;
 }
-body.workspace-shell-v2[data-zone="agent"] .agc-created-today {
+body.workspace-shell-v2[data-zone="agent"] .agc-published-today {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2539,7 +2539,7 @@ body.workspace-shell-v2[data-zone="agent"] .agc-select-mark.is-visible {
   opacity: 1;
   transform: scale(1);
 }
-body.workspace-shell-v2[data-zone="agent"] .agc-override-name > em.agc-created-today {
+body.workspace-shell-v2[data-zone="agent"] .agc-override-name > em.agc-published-today {
   grid-column: 2;
   grid-row: 2;
   justify-self: end;

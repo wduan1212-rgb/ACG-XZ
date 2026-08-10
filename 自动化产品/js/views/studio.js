@@ -4,16 +4,16 @@ import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../co
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, isAccountDisabled } from "../domain/accounts.js";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260810-v141-dashboard-metrics-1";
-import { accountCreationQuota, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260810-v141-dashboard-metrics-1";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { accountPublishQuota, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v141-dashboard-metrics-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260810-v141-dashboard-metrics-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260810-v141-dashboard-metrics-1";
-import { renderCutPage } from "./chainCut.js?v=20260810-v141-dashboard-metrics-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260810-v141-dashboard-metrics-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { renderCutPage } from "./chainCut.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { renderReviewPage } from "./chainCopy.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 
 export const studioView = {
   render(root, { page }) {
@@ -107,8 +107,8 @@ function renderHome(root, acc) {
   const charRefUrl = board ? urlFor(board) : "";
   const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
   const disabledAccount = isAccountDisabled(acc);
-  const creationQuota = accountCreationQuota(acc.id);
-  void refreshAccountCreationQuotas([acc.id]).then(changed => {
+  const publishQuota = accountPublishQuota(acc.id);
+  void refreshAccountPublishQuotas([acc.id], { force: true }).then(changed => {
     if (changed && root.isConnected && state.ui.activeAccountId === acc.id && document.body.dataset.zone === "studio") {
       renderHome(root, acc);
     }
@@ -136,7 +136,7 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
-          <span class="status-pill ${creationQuota.remaining ? "ok" : "warn"}" title="同一账号的所有成员每日合计最多创作 ${creationQuota.limit} 条">今日 ${creationQuota.used}/${creationQuota.limit}</span>
+          <span class="status-pill ${publishQuota.remaining ? "ok" : "warn"}" title="同一账号的所有成员每日合计最多发布 ${publishQuota.limit} 条">今日发布 ${publishQuota.used}/${publishQuota.limit}</span>
           ${acc.homepageUrl
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
@@ -144,8 +144,8 @@ function renderHome(root, acc) {
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           ${disabledAccount
             ? `<button class="btn ghost is-disabled" type="button" disabled title="账号已停用，历史数据仍可查看">账号已停用</button>`
-            : creationQuota.remaining <= 0
-              ? `<button class="btn ghost is-disabled" type="button" disabled title="今日配额已用完">今日配额已用完</button>`
+            : publishQuota.remaining <= 0
+              ? `<button class="btn ghost is-disabled" type="button" disabled title="今日发布配额已用完">今日发布已满</button>`
               : `<button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>`}
         </div>
       </header>
@@ -286,8 +286,7 @@ function renderHome(root, acc) {
         state.ui.activeProductionId = p.id; save("meta");
         go("studio", acc.mode === "视频" ? "workshop" : "images");
       } catch (error) {
-        toast(error?.message || "创作配额校验失败，请稍后重试", "error");
-        void refreshAccountCreationQuotas([acc.id], { force: true }).then(() => renderHome(root, acc));
+        toast(error?.message || "创建失败，请稍后重试", "error");
       }
     },
 	    edit: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: { accountId: acc.id } })),

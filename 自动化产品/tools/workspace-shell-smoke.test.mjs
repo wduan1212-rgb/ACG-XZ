@@ -387,7 +387,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260810-v141-dashboard-metrics-1/);
+  assert.match(videoWorkshopHtml, /20260810-v1412-publish-quota-baige-canvas-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -826,26 +826,26 @@ test("canvas and video switches wait for the real latest project before routing"
 test("all modified workspace-shell resources use the v141 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260810-v141-dashboard-metrics-1"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260810-v141-dashboard-metrics-1/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260810-v141-dashboard-metrics-1"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260810-v1412-publish-quota-baige-canvas-1/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
-  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260810-v141-dashboard-metrics-1"/);
+  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260810-v1412-publish-quota-baige-canvas-1"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260810-v141-dashboard-metrics-1/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260810-v141-dashboard-metrics-1"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260810-v1412-publish-quota-baige-canvas-1/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260810-v1412-publish-quota-baige-canvas-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
@@ -892,8 +892,8 @@ test("batch account selection stays spatially stable and shows shared daily quot
 
   assert.match(planCard, /aria-pressed="\$\{on \? "true" : "false"\}"/);
   assert.match(planCard, /class="agc-select-mark \$\{on \? "is-visible" : ""\}"/);
-  assert.match(planCard, /const creationQuota = accountCreationQuota\(a\.id\)/);
-  assert.match(planCard, /class="agc-account-meta"[\s\S]*?class="agc-account-type"[\s\S]*?今日 \$\{quota\.used\}\/\$\{quota\.limit\}/);
+  assert.match(planCard, /const publishQuota = accountPublishQuota\(a\.id\)/);
+  assert.match(planCard, /class="agc-account-meta"[\s\S]*?class="agc-account-type"[\s\S]*?今日发布 \$\{quota\.used\}\/\$\{quota\.limit\}/);
   assert.match(planCard, /quotaFull && !on/);
   assert.doesNotMatch(planCard, /\$\{on \? icon\("check"/);
   assert.match(uiMotionCss, /v130 batch interaction:[\s\S]*?\.agc-acc\s*\{[\s\S]*?grid-template-columns:\s*48px\s+minmax\(0,\s*1fr\)\s+minmax\(104px,\s*max-content\)\s+24px/);

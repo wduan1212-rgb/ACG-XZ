@@ -4,10 +4,15 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260810-v141-dashboard-metrics-1";
+import { setStage, touch } from "./productions.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260810-v141-dashboard-metrics-1";
+import { assertPublishText } from "./publishRules.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import {
+  accountPublishAvailable,
+  invalidateAccountPublishQuotas,
+  refreshAccountPublishQuotas,
+} from "./productionQuota.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -236,6 +241,10 @@ export async function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  await refreshAccountPublishQuotas([acc.id], { force: true });
+  if (!accountPublishAvailable(acc.id)) {
+    throw new Error("该账号今日已达到 2 条内容的发布上限");
+  }
   assertPublishText({
     platform: acc.platform,
     title: p.artifacts?.copy?.title || p.title || "",
@@ -283,13 +292,22 @@ export async function deliver(p, opts = {}) {
   productionDraft.updatedAt = now;
 
   if (remote.isOn()) {
-    const response = await remote.productionDeliveries.publish(p.id, {
-      deliveryId: asset.id,
-      delivery: asset,
-      assets: dependencyAssets,
-      account: { ...acc },
-      production: productionDraft,
-    });
+    let response;
+    try {
+      response = await remote.productionDeliveries.publish(p.id, {
+        deliveryId: asset.id,
+        delivery: asset,
+        assets: dependencyAssets,
+        account: { ...acc },
+        production: productionDraft,
+      });
+    } catch (error) {
+      if (Number(error?.status || 0) === 409) {
+        invalidateAccountPublishQuotas([acc.id]);
+        void refreshAccountPublishQuotas([acc.id], { force: true });
+      }
+      throw error;
+    }
     const canonical = response?.delivery;
     if (!canonical?.id || !response?.production?.id || !response?.account?.id) {
       throw new Error("服务器未返回完整发布确认");
@@ -310,6 +328,8 @@ export async function deliver(p, opts = {}) {
       cacheCanonicalDocuments("accounts", response.account),
       cacheCanonicalDocuments("productions", response.production),
     ]);
+    invalidateAccountPublishQuotas([acc.id]);
+    await refreshAccountPublishQuotas([acc.id], { force: true });
     save("meta");
     notify("delivery", `「${canonical.title || canonical.name}」已发布`, `#${String(canonical.pubSeq || 0).padStart(3, "0")} · ${canonical.name}${canonical.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
     return canonical;
@@ -326,6 +346,7 @@ export async function deliver(p, opts = {}) {
     source: "delivered-production-video"
   });
   state.assets.push(asset);
+  invalidateAccountPublishQuotas([acc.id]);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
   Object.assign(p, productionDraft);
   state.ui.deliverSeq = pubSeq;

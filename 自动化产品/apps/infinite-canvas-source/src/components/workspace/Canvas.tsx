@@ -28,8 +28,10 @@ interface SnapEdges {
 interface DragData {
   pointerStart: Vec2;
   startPositions: Record<string, Vec2>;
+  primaryId: string;
   primary: { start: Vec2; w: number; h: number };
   others: SnapEdges[];
+  raised: boolean;
 }
 
 const SNAP_PX = 6; // screen-px snap threshold
@@ -333,6 +335,12 @@ export function Canvas({
       } else if (g.mode === "drag") {
         const dd = dragData.current;
         if (!dd) return;
+        // Selection alone must stay local. Only a real drag changes z-order
+        // and therefore schedules project persistence.
+        if (g.moved && !dd.raised) {
+          bringToFront(projectId, dd.primaryId);
+          dd.raised = true;
+        }
         const z = useStore.getState().viewportByProject[projectId]?.zoom ?? 1;
         const rawX = (e.clientX - dd.pointerStart.x) / z;
         const rawY = (e.clientY - dd.pointerStart.y) / z;
@@ -404,7 +412,7 @@ export function Canvas({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [projectId, setViewport, moveItemsTo, clearSelection, setSelection, updateItem]);
+  }, [projectId, setViewport, moveItemsTo, clearSelection, setSelection, updateItem, bringToFront]);
 
   function onContainerPointerDown(e: RPointerEvent) {
     userAdjusted.current = true;
@@ -416,7 +424,7 @@ export function Canvas({
       startX: e.clientX,
       startY: e.clientY,
       moved: false,
-      additive: e.shiftKey,
+      additive: e.shiftKey || e.metaKey || e.ctrlKey,
     };
     if (selecting) {
       const host = containerRef.current?.getBoundingClientRect();
@@ -432,10 +440,8 @@ export function Canvas({
       return;
     }
     const sel = useStore.getState().selection;
-    if (e.shiftKey) toggleSelection(item.id);
+    if (e.shiftKey || e.metaKey || e.ctrlKey) toggleSelection(item.id);
     else if (!sel.includes(item.id)) setSelection([item.id]);
-    bringToFront(projectId, item.id);
-
     // Snapshot positions for snap-drag: selected items move, the rest are snap targets.
     const state = useStore.getState();
     const all = (state.itemsByProject[projectId] ?? []).filter((it) => !it.hidden);
@@ -454,8 +460,10 @@ export function Canvas({
     dragData.current = {
       pointerStart: { x: e.clientX, y: e.clientY },
       startPositions,
+      primaryId: item.id,
       primary: { start: { ...item.position }, w: item.size.width, h: item.size.height },
       others,
+      raised: false,
     };
     gesture.current = { mode: "drag", lastX: e.clientX, lastY: e.clientY, startX: e.clientX, startY: e.clientY, moved: false };
   }

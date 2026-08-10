@@ -327,11 +327,11 @@ export function syncCollection(name, items) {
   return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } });
 }
 
-export function accountCreationQuotas(accountIds = []) {
+export function accountPublishQuotas(accountIds = []) {
   if (!_on || !_token || _authBlocked) return Promise.resolve(null);
   const ids = [...new Set((accountIds || []).map(String).filter(Boolean))].slice(0, 200);
   if (!ids.length) return Promise.resolve({ dayKey: "", limit: 2, items: [] });
-  return req("/api/account-creation-quotas?accountIds=" + encodeURIComponent(ids.join(",")));
+  return req("/api/account-publish-quotas?accountIds=" + encodeURIComponent(ids.join(",")));
 }
 export function deleteDoc(name, id) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name) || id == null) return Promise.resolve();

@@ -69,6 +69,7 @@ const serverTombstonedProjects = new Set<string>();
 const explicitlyEmptyCanvasProjects = new Set<string>();
 const serverRefreshRequiredProjects = new Set<string>();
 const conflictedCanvasProjects = new Set<string>();
+const canvasSyncRetryAttempts = new Map<string, number>();
 // Compatibility name retained for the deployment snapshot audit. The new
 // implementation performs backup + verified per-project readback before split.
 const splitCanvasPersistence = migrateLegacyCanvasEnvelope;
@@ -153,6 +154,8 @@ interface AppState {
   syncCanvasProjectIndex: () => Promise<void>;
   /** Immediately commit the latest result to the verified local checkpoint. */
   flushCanvasProjectLocal: (projectId: string) => Promise<void>;
+  /** Retry a transient server write without changing or replacing local content. */
+  retryCanvasProjectSync: (projectId: string) => void;
 
   /* ---- canvas items ---- */
   addItem: (projectId: string, item: CanvasItem) => void;
@@ -327,6 +330,7 @@ function scheduleCanvasProjectPersistence(
           return canvasProjectSnapshot(get(), projectId, clientUpdatedAt);
         }, {
           onSuccess: (result, sent) => {
+            canvasSyncRetryAttempts.delete(projectId);
             const revision = result.project.revision;
             if (!Number.isFinite(revision) || serverTombstonedProjects.has(projectId)) return;
             // Advance the revision even when a newer local mutation appeared
@@ -378,6 +382,7 @@ function scheduleCanvasProjectPersistence(
           },
           onError: (error, sent) => {
             if (error instanceof CanvasSyncError && error.status === 410) {
+              canvasSyncRetryAttempts.delete(projectId);
               removeServerTombstonedProject(projectId);
               return;
             }
@@ -385,6 +390,7 @@ function scheduleCanvasProjectPersistence(
               ? `${error.message}。本地未同步内容已保留，不会覆盖服务器。`
               : "服务器同步暂时失败，本地内容已保留。";
             if (error instanceof CanvasSyncError && error.status === 409) {
+              canvasSyncRetryAttempts.delete(projectId);
               conflictedCanvasProjects.add(projectId);
               void writeCanvasProjectVerified(projectId, {
                 items: sent.items,
@@ -403,6 +409,20 @@ function scheduleCanvasProjectPersistence(
             useStore.setState((current) => ({
               projectSyncError: { ...current.projectSyncError, [projectId]: message },
             }));
+            if (!(error instanceof CanvasSyncError) || error.status >= 500 || error.status === 408 || error.status === 429) {
+              const attempt = (canvasSyncRetryAttempts.get(projectId) || 0) + 1;
+              canvasSyncRetryAttempts.set(projectId, attempt);
+              if (attempt <= 3 && !conflictedCanvasProjects.has(projectId)) {
+                const retryDelay = [1000, 3000, 8000][attempt - 1];
+                useStore.setState((current) => ({
+                  projectSyncError: {
+                    ...current.projectSyncError,
+                    [projectId]: `服务器同步暂时中断，正在自动重试 ${attempt}/3；本地内容已保留。`,
+                  },
+                }));
+                scheduleCanvasProjectPersistence(projectId, get, retryDelay);
+              }
+            }
           },
         });
       })
@@ -622,6 +642,18 @@ export const useStore = create<AppState>()(
 
       flushCanvasProjectLocal: (projectId) =>
         flushCanvasProjectLocalCheckpoint(projectId, get),
+
+      retryCanvasProjectSync: (projectId) => {
+        if (conflictedCanvasProjects.has(projectId)) return;
+        canvasSyncRetryAttempts.set(projectId, 0);
+        set((state) => ({
+          projectSyncError: {
+            ...state.projectSyncError,
+            [projectId]: "正在重新同步本地内容；同步完成前不会覆盖本地画布。",
+          },
+        }));
+        scheduleCanvasProjectPersistence(projectId, get, 0);
+      },
 
       deleteProject: (id) => {
         if (!queueCanvasProjectDelete(id)) {

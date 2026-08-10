@@ -114,10 +114,10 @@ class V105DetailFixesTest(unittest.TestCase):
         cards = self.read("js/agent/cards.js")
         studio = self.read("js/views/studio.js")
         self.assertIn('kind !== "video" || groupOf(account) === "素材"', publishing)
-        self.assertIn("accountCreationQuota(account.id)", publishing)
+        self.assertIn("accountPublishQuota(account.id)", publishing)
         self.assertIn("export function accountCreatedToday", accounts)
-        self.assertIn("accountCreationQuota(a.id)", cards)
-        self.assertIn("accountCreationQuota(acc.id)", studio)
+        self.assertIn("accountPublishQuota(a.id)", cards)
+        self.assertIn("accountPublishQuota(acc.id)", studio)
 
     def test_infinite_canvas_interactions_reuse_existing_selection_store(self):
         home = self.read("apps/infinite-canvas-source/src/components/home/HomeView.tsx")

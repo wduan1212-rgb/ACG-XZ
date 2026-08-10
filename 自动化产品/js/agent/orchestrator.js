@@ -3,18 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260810-v141-dashboard-metrics-1";
+import { AI } from "../api/ai.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v141-dashboard-metrics-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260810-v141-dashboard-metrics-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260810-v141-dashboard-metrics-1";
+import { deliver } from "../domain/delivery.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -2191,11 +2192,16 @@ async function draftOne(p, batch) {
     setStatus(p, "running");
     // 主题 / 创作内容只来自用户填写；账号资料仅提供风格，不再代替用户选题。
     const rawProductId = (batch.accountProductIds && batch.accountProductIds[acc.id]) || batch.productId || p.artifacts.script.productId || "dumate";
-    const productId = primaryProductById(rawProductId)?.id || "dumate";
-    p.artifacts.script.productId = productId;
+    let productId = primaryProductById(rawProductId)?.id || "dumate";
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
     let topic = contentOverride || batch.topic || p.topic || "";
-    const product = productById(productId);
+    const product = catalogProductForText(
+      state.products,
+      `${topic}\n${(batch.accountCopyTitles || {})[acc.id] || ""}\n${(batch.accountCopyBodies || {})[acc.id] || ""}`,
+      productById(productId),
+    ) || productById(productId);
+    productId = product?.id || productId;
+    p.artifacts.script.productId = productId;
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
     if (batch.contentKind === "static") {
       let lastError = null;
@@ -2267,7 +2273,7 @@ async function draftOne(p, batch) {
         assetId: null,
         status: "idle"
       }];
-      const copyPromise = AI.generateImageCopyFromTitle({ title: singleImageTitle, account: acc });
+      const copyPromise = AI.generateImageCopyFromTitle({ title: singleImageTitle, account: acc, product });
       const generated = await generateBatchImagesInHouse(p, batch, acc);
       const item = p.artifacts.images.items[0];
       if (!generated || !item?.assetId) {
@@ -2408,6 +2414,7 @@ async function draftOne(p, batch) {
           const generatedCopy = await AI.generateImageCopyFromTitle({
             title: p.artifacts.copy.title || customTopic,
             account: acc,
+            product,
             referenceContext: copyReferenceBrief.brief,
             referenceTerms: copyReferenceBrief.requiredTerms
           });
@@ -3059,7 +3066,6 @@ export async function startBatch(plan, session) {
   const pendingProductions = [];
   accounts.forEach(acc => {
     const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
-    const productId = primaryProductById(rawProductId)?.id || "dumate";
     const perAccountCount = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
     const imageCount = Math.max(1, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
     for (let i = 0; i < perAccountCount; i++) {
@@ -3071,6 +3077,12 @@ export async function startBatch(plan, session) {
         || plan.topic
         || ""
       ).trim();
+      const selectedProduct = catalogProductForText(
+        state.products,
+        `${topic}\n${(plan.accountCopyBodies || {})[acc.id] || ""}`,
+        primaryProductById(rawProductId),
+      );
+      const productId = selectedProduct?.id || primaryProductById(rawProductId)?.id || "dumate";
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId, persist: false });
       if (p) {
         if (batch.contentKind === "static") {

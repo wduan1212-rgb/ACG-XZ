@@ -1,11 +1,13 @@
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
 
-export const ACCOUNT_DAILY_CREATION_LIMIT = 2;
+export const ACCOUNT_DAILY_PUBLISH_LIMIT = 2;
 
 const cache = new Map();
 const inflight = new Map();
-const CACHE_TTL_MS = 30_000;
+const CACHE_TTL_MS = 10_000;
+const AUTO_REFRESH_MS = 15_000;
+let autoRefreshInstalled = false;
 
 function chinaDayKey(timestamp = Date.now()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -15,39 +17,31 @@ function chinaDayKey(timestamp = Date.now()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
-function productionDayKey(production = {}) {
-  const stamped = String(production.quotaDayKey || "");
+function deliveryPublishDayKey(delivery = {}) {
+  const stamped = String(delivery.quotaDayKey || "");
   if (stamped) return stamped;
-  const createdAt = Number(production.quotaCreatedAt || production.createdAt || 0);
-  return createdAt > 0 ? chinaDayKey(createdAt) : "";
+  const publishedAt = Number(
+    delivery.quotaPublishedAt || delivery.deliveredAt || delivery.createdAt || 0
+  );
+  return publishedAt > 0 ? chinaDayKey(publishedAt) : "";
 }
 
 function localUsed(accountId) {
   const today = chinaDayKey();
-  const productionCount = state.productions.filter(production => (
-    String(production?.accountId || "") === String(accountId || "")
-    && productionDayKey(production) === today
-  )).length;
-  const customDeliveryCount = state.assets.filter(asset => (
+  return state.assets.filter(asset => (
     String(asset?.accountId || "") === String(accountId || "")
     && asset?.delivered
-    && asset?.customProjectId
-    && productionDayKey({
-      quotaDayKey: asset.quotaDayKey,
-      quotaCreatedAt: asset.quotaCreatedAt,
-      createdAt: asset.deliveredAt || asset.createdAt,
-    }) === today
+    && deliveryPublishDayKey(asset) === today
   )).length;
-  return productionCount + customDeliveryCount;
 }
 
-export function accountCreationQuota(accountId) {
+export function accountPublishQuota(accountId) {
   const id = String(accountId || "");
   const local = localUsed(id);
   const stored = cache.get(id);
   const current = stored?.dayKey === chinaDayKey() ? Number(stored.used || 0) : 0;
   const used = Math.max(0, local, current);
-  const limit = Math.max(1, Number(stored?.limit || ACCOUNT_DAILY_CREATION_LIMIT));
+  const limit = Math.max(1, Number(stored?.limit || ACCOUNT_DAILY_PUBLISH_LIMIT));
   return {
     accountId: id,
     dayKey: chinaDayKey(),
@@ -58,34 +52,31 @@ export function accountCreationQuota(accountId) {
   };
 }
 
-export function accountCreationAvailable(accountId, requested = 1) {
-  return accountCreationQuota(accountId).remaining >= Math.max(1, Number(requested) || 1);
+export function accountPublishAvailable(accountId, requested = 1) {
+  return accountPublishQuota(accountId).remaining >= Math.max(1, Number(requested) || 1);
 }
 
-export function quotaExceededMessage(accountIds = []) {
+export function publishQuotaExceededMessage(accountIds = []) {
   const names = [...new Set((accountIds || []).map(id => (
     state.accounts.find(account => String(account.id) === String(id))?.name || String(id)
   )))].slice(0, 3);
-  return `${names.join("、")}${accountIds.length > 3 ? "等账号" : ""}今日已达每个账号 ${ACCOUNT_DAILY_CREATION_LIMIT} 条的创作上限`;
+  return `${names.join("、")}${accountIds.length > 3 ? "等账号" : ""}今日已达每个账号 ${ACCOUNT_DAILY_PUBLISH_LIMIT} 条的发布上限`;
 }
 
-export function validateAccountCreationRequests(items = []) {
-  const requested = new Map();
-  (items || []).forEach(item => {
-    const accountId = String(item?.accountId || "");
-    if (accountId) requested.set(accountId, (requested.get(accountId) || 0) + 1);
-  });
-  const exceeded = [...requested].filter(([accountId, count]) => (
-    !accountCreationAvailable(accountId, count)
-  )).map(([accountId]) => accountId);
-  if (exceeded.length) throw new Error(quotaExceededMessage(exceeded));
-}
-
-export function invalidateAccountCreationQuotas(accountIds = []) {
+export function invalidateAccountPublishQuotas(accountIds = []) {
   (accountIds || []).forEach(accountId => cache.delete(String(accountId || "")));
 }
 
-export async function refreshAccountCreationQuotas(accountIds = [], { force = false } = {}) {
+function announceQuotaChange(accountIds) {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  if (typeof CustomEvent === "function") {
+    window.dispatchEvent(new CustomEvent("xingzhen:account-publish-quotas", {
+      detail: { accountIds: [...accountIds] }
+    }));
+  }
+}
+
+export async function refreshAccountPublishQuotas(accountIds = [], { force = false } = {}) {
   const ids = [...new Set((accountIds || []).map(String).filter(Boolean))];
   if (!ids.length || !remote.isOn() || !remote.hasToken()) return false;
   const now = Date.now();
@@ -93,26 +84,48 @@ export async function refreshAccountCreationQuotas(accountIds = [], { force = fa
   if (!needed.length) return false;
   const key = [...needed].sort().join(",");
   if (inflight.has(key)) return inflight.get(key);
-  const task = remote.accountCreationQuotas(needed).then(result => {
+  const task = remote.accountPublishQuotas(needed).then(result => {
     if (!result) return false;
-    const before = needed.map(id => JSON.stringify(accountCreationQuota(id))).join("|");
+    const before = needed.map(id => JSON.stringify(accountPublishQuota(id))).join("|");
     const byId = new Map((result.items || []).map(item => [String(item.accountId), item]));
     needed.forEach(id => {
-      const item = byId.get(id) || { used: 0, remaining: Number(result.limit || ACCOUNT_DAILY_CREATION_LIMIT) };
+      const item = byId.get(id) || { used: 0, remaining: Number(result.limit || ACCOUNT_DAILY_PUBLISH_LIMIT) };
       cache.set(id, {
         dayKey: String(result.dayKey || chinaDayKey()),
-        limit: Number(result.limit || ACCOUNT_DAILY_CREATION_LIMIT),
+        limit: Number(result.limit || ACCOUNT_DAILY_PUBLISH_LIMIT),
         used: Number(item.used || 0),
         remaining: Number(item.remaining || 0),
         authoritative: true,
         fetchedAt: Date.now(),
       });
     });
-    return before !== needed.map(id => JSON.stringify(accountCreationQuota(id))).join("|");
+    const changed = before !== needed.map(id => JSON.stringify(accountPublishQuota(id))).join("|");
+    if (changed) announceQuotaChange(needed);
+    return changed;
   }).catch(error => {
-    console.warn("创作配额同步失败", error);
+    console.warn("发布配额同步失败", error);
     return false;
   }).finally(() => inflight.delete(key));
   inflight.set(key, task);
   return task;
+}
+
+export function installAccountPublishQuotaAutoRefresh() {
+  if (
+    autoRefreshInstalled
+    || typeof window === "undefined"
+    || typeof document === "undefined"
+  ) return;
+  autoRefreshInstalled = true;
+  const refreshVisible = () => {
+    if (document.hidden) return;
+    void refreshAccountPublishQuotas(
+      state.accounts.map(account => account.id),
+      { force: true },
+    );
+  };
+  window.addEventListener("focus", refreshVisible);
+  document.addEventListener("visibilitychange", refreshVisible);
+  const timer = setInterval(refreshVisible, AUTO_REFRESH_MS);
+  timer?.unref?.();
 }

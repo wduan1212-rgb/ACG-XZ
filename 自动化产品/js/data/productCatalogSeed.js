@@ -3,7 +3,7 @@
 
 const now = () => Date.now();
 
-export const PRODUCT_CATALOG_VERSION = "20260809-product-db-v3-baige";
+export const PRODUCT_CATALOG_VERSION = "20260810-product-db-v4-baige-aliases";
 
 export const PRODUCT_CATALOG_SEED = [
   {
@@ -272,6 +272,32 @@ export function productByKey(products = [], key = "") {
     const text = [p.id, p.name, p.shortName, ...(p.keywords || [])].join(" ").toLowerCase();
     return text.includes(q);
   }) || null;
+}
+
+function normalizedProductMention(value = "") {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s·•._/｜|、，,。:：；;（）()【】\[\]-]+/g, "");
+}
+
+export function catalogProductForText(products = [], text = "", currentProduct = null) {
+  const source = normalizedProductMention(text);
+  if (!source) return currentProduct;
+  const matched = (products || [])
+    .filter(product => product?.owner === "ours")
+    .flatMap(product => [
+      product.name,
+      product.shortName,
+      product.id,
+      ...(product.keywords || []),
+    ].filter(Boolean).map(alias => ({
+      product,
+      alias: normalizedProductMention(alias),
+    })))
+    .filter(item => item.alias.length >= 2 && source.includes(item.alias))
+    .sort((left, right) => right.alias.length - left.alias.length)[0];
+  return matched?.product || currentProduct;
 }
 
 export function relatedProducts(product, all = [], limit = 4) {

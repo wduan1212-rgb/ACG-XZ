@@ -15,6 +15,7 @@ export function TopBar({
   canExport,
   exportCount,
   canPublish,
+  publishCount,
   canShare,
   showPublish = true,
   embedded = false,
@@ -30,6 +31,7 @@ export function TopBar({
   canExport: boolean;
   exportCount: number;
   canPublish: boolean;
+  publishCount: number;
   canShare: boolean;
   showPublish?: boolean;
   embedded?: boolean;
@@ -82,7 +84,7 @@ export function TopBar({
             onClick={onPublish}
             disabled={!canPublish || publishing}
           >
-            <Send size={15} /> {publishing ? "合成中…" : "发布"}
+            <Send size={15} /> {publishing ? "合成中…" : (publishCount > 1 ? `发布 ${publishCount} 张` : "发布")}
           </Button>
         )}
       </div>
@@ -133,7 +135,7 @@ export function TopBar({
           aria-live="polite"
           title={publishNotice}
         >
-          {publishNotice || (!canPublish ? "请先选中一张图片后发布" : "")}
+          {publishNotice || (!canPublish ? "请选择图片；Mac 按 Command、Windows 按 Ctrl/Shift，或拖框多选" : (publishCount > 1 ? `将按选择顺序发布 ${publishCount} 张图片` : ""))}
         </span>
         <Button variant="secondary" onClick={onExport} disabled={!canExport}>
           <Download size={15} /> {exportCount > 1 ? `批量导出 ${exportCount} 张` : "导出"}
@@ -147,7 +149,7 @@ export function TopBar({
             onClick={onPublish}
             disabled={!canPublish || publishing}
           >
-            <Send size={15} /> {publishing ? "合成中…" : "发布"}
+            <Send size={15} /> {publishing ? "合成中…" : (publishCount > 1 ? `发布 ${publishCount} 张` : "发布")}
           </Button>
         )}
       </div>

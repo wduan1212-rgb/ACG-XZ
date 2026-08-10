@@ -9289,6 +9289,15 @@ def _custom_canvas_draft_value_error(exc):
     }:
         raise HTTPException(415, "无限画布草稿只支持安全的 PNG、JPEG、WebP、GIF 或 SVG 图片")
     if reason in {
+        "custom_canvas_business_reference_blob_missing",
+        "custom_canvas_community_reference_blob_missing",
+        "custom_canvas_cross_owner_reference_conflict",
+    }:
+        raise HTTPException(
+            500,
+            "无限画布发现历史媒体引用缺少原件，已保留本地草稿并阻止覆盖，请联系管理员处理",
+        )
+    if reason in {
         "custom_canvas_blob_missing",
         "custom_canvas_blob_conflict",
         "invalid_custom_canvas_stored_state",
@@ -10070,8 +10079,8 @@ def custom_projects_publish(
     }
     if error in publish_text_errors:
         raise HTTPException(422, publish_text_errors[error])
-    if error == "account_daily_creation_quota_exceeded":
-        raise HTTPException(409, "该账号今日已达到 2 条内容的创作上限")
+    if error == "account_daily_publish_quota_exceeded":
+        raise HTTPException(409, "该账号今日已达到 2 条内容的发布上限")
     if error in {
         "delivery_not_found",
         "delivery_mismatch",
@@ -10120,6 +10129,8 @@ def productions_publish(
     }
     if error in publish_text_errors:
         raise HTTPException(422, publish_text_errors[error])
+    if error == "account_daily_publish_quota_exceeded":
+        raise HTTPException(409, "该账号今日已达到 2 条内容的发布上限")
     if error in {
         "production_not_found", "account_not_found", "account_deleted",
         "delivery_asset_deleted", "delivery_asset_missing",
@@ -10193,14 +10204,22 @@ def publish_tags_create(req: PublishTagReq, me=Depends(require_member)):
     return {"item": item}
 
 
-@app.get("/api/account-creation-quotas")
-def api_account_creation_quotas(
+@app.get("/api/account-publish-quotas")
+def api_account_publish_quotas(
     accountIds: str = "", me=Depends(require_member)
 ):
     account_ids = [item.strip() for item in accountIds.split(",") if item.strip()]
     if not account_ids:
-        return {"dayKey": "", "limit": store.ACCOUNT_DAILY_CREATION_LIMIT, "items": []}
-    return store.account_creation_quotas(me["id"], account_ids)
+        return {"dayKey": "", "limit": store.ACCOUNT_DAILY_PUBLISH_LIMIT, "items": []}
+    return store.account_publish_quotas(me["id"], account_ids)
+
+
+@app.get("/api/account-creation-quotas")
+def api_account_creation_quotas_compat(
+    accountIds: str = "", me=Depends(require_member)
+):
+    """Compatibility alias for stale clients; semantics are publish-only."""
+    return api_account_publish_quotas(accountIds, me)
 
 
 @app.put("/api/db/{collection}")
@@ -10221,12 +10240,12 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
             store.upsert_voice_presets(me["id"], me["role"], req.items)
         else:
             result = store.upsert_member_collection(me["id"], me["role"], collection, req.items)
-    except store.AccountDailyCreationQuotaExceeded as exc:
+    except store.AccountDailyPublishQuotaExceeded as exc:
         accounts = "、".join(exc.account_ids[:3])
         suffix = "等账号" if len(exc.account_ids) > 3 else ""
         raise HTTPException(
             409,
-            f"{accounts}{suffix}今日已达每个账号 {exc.limit} 条的创作上限，请明日再创作或更换账号。",
+            f"{accounts}{suffix}今日已达每个账号 {exc.limit} 条的发布上限，请明日再发布或更换账号。",
         )
     except PermissionError:
         raise HTTPException(403, "当前账号无权修改该共享配置或其他成员的业务数据")

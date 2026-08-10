@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import {
   PRODUCT_CATALOG_SEED,
   PRODUCT_CATALOG_VERSION,
+  catalogProductForText,
 } from "../js/data/productCatalogSeed.js";
 import {
   publishTextLength,
@@ -40,9 +41,32 @@ test("Baige catalog carries verified facts and explicit-title routing", () => {
   assert.ok(baige.verifiedFacts.some(fact => fact.includes("32%")));
   assert.ok(baige.verifiedFacts.some(fact => fact.includes("40%+")));
   assert.ok(baige.forbiddenClaims.some(claim => claim.includes("LoongForge")));
+  const fallback = PRODUCT_CATALOG_SEED.find(product => product.id === "dumate");
+  assert.equal(catalogProductForText(PRODUCT_CATALOG_SEED, "做一期百舸工具链", fallback)?.id, "baige");
+  assert.equal(catalogProductForText(PRODUCT_CATALOG_SEED, "百度百舸 6.0", fallback)?.id, "baige");
 
   const aiSource = readFileSync(new URL("../js/api/ai.js", import.meta.url), "utf8");
   assert.match(aiSource, /function primaryProductForText/);
+  assert.match(aiSource, /\.\.\.\(product\?\.keywords \|\| \[\]\)/);
   assert.match(aiSource, /product = primaryProductForText\(sourceTitle, product\)/);
+  assert.match(aiSource, /imagePromptProductBrief\(product\)/);
   assert.match(aiSource, /禁止外推/);
+
+  const orchestrator = readFileSync(new URL("../js/agent/orchestrator.js", import.meta.url), "utf8");
+  assert.match(orchestrator, /catalogProductForText\(/);
+  assert.match(orchestrator, /p\.artifacts\.script\.productId = productId/);
+});
+
+test("account quota counts publishes, refreshes stale views, and never blocks draft creation", () => {
+  const quota = readFileSync(new URL("../js/domain/productionQuota.js", import.meta.url), "utf8");
+  const productions = readFileSync(new URL("../js/domain/productions.js", import.meta.url), "utf8");
+  const delivery = readFileSync(new URL("../js/domain/delivery.js", import.meta.url), "utf8");
+  assert.match(quota, /state\.assets\.filter\(asset =>/);
+  assert.doesNotMatch(quota, /state\.productions\.filter/);
+  assert.match(quota, /delivery\.quotaPublishedAt \|\| delivery\.deliveredAt/);
+  assert.match(quota, /window\.addEventListener\("focus", refreshVisible\)/);
+  assert.match(quota, /setInterval\(refreshVisible, AUTO_REFRESH_MS\)/);
+  assert.doesNotMatch(productions, /validateAccountCreationRequests/);
+  assert.match(delivery, /await refreshAccountPublishQuotas\(\[acc\.id\], \{ force: true \}\)/);
+  assert.match(delivery, /accountPublishAvailable\(acc\.id\)/);
 });

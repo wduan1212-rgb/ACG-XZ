@@ -32,7 +32,11 @@ function ProjectGate({ projectId }: { projectId: string }) {
   const syncError = useStore((state) => state.projectSyncError[projectId] || "");
   const enterProject = useStore((state) => state.enterProject);
   const adoptServerProject = useStore((state) => state.adoptServerProject);
+  const retryCanvasProjectSync = useStore((state) => state.retryCanvasProjectSync);
   const syncCanvasProjectIndex = useStore((state) => state.syncCanvasProjectIndex);
+  const hasServerConflict = syncError.includes("本地未同步内容已保留")
+    || syncError.includes("服务器与本地都出现了新编辑")
+    || syncError.includes("暂停自动同步");
 
   const downloadLocalRecovery = () => {
     const blob = new Blob([JSON.stringify({ project, items, messages, viewport }, null, 2)], {
@@ -76,9 +80,15 @@ function ProjectGate({ projectId }: { projectId: string }) {
                 <Button size="sm" variant="secondary" onClick={downloadLocalRecovery}>
                   导出本地恢复包
                 </Button>
-                <Button size="sm" variant="primary" onClick={() => void adoptServerProject(projectId)}>
-                  采用服务器版本
-                </Button>
+                {hasServerConflict ? (
+                  <Button size="sm" variant="primary" onClick={() => void adoptServerProject(projectId)}>
+                    采用服务器版本
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="primary" onClick={() => retryCanvasProjectSync(projectId)}>
+                    重试同步本地内容
+                  </Button>
+                )}
               </span>
             )}
           </div>

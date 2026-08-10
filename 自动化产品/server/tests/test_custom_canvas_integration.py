@@ -64,6 +64,17 @@ def striped_png_data_url(width=160, height=90):
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
+    def test_canvas_historical_media_errors_are_not_reported_as_bad_draft_format(self):
+        for reason in (
+            "custom_canvas_business_reference_blob_missing",
+            "custom_canvas_community_reference_blob_missing",
+            "custom_canvas_cross_owner_reference_conflict",
+        ):
+            with self.subTest(reason=reason), self.assertRaises(HTTPException) as raised:
+                main._custom_canvas_draft_value_error(ValueError(reason))
+            self.assertEqual(500, raised.exception.status_code)
+            self.assertIn("历史媒体引用缺少原件", str(raised.exception.detail))
+
     def test_platform_creates_one_real_canvas_project_for_a_first_time_user(self):
         source = (APP_DIR / "js/views/customCanvasIntegration.js").read_text(encoding="utf-8")
         self.assertIn("currentProjectId = await loadRecentProjectId(token, controller.signal)", source)
@@ -650,7 +661,21 @@ console.log(JSON.stringify({{
         self.assertIn('type: "performance"', source_text)
         self.assertIn('stage: "hydration"', source_text)
         self.assertIn('type: "publish-request"', source_text)
-        self.assertIn("items: [{ ...item }]", source_text)
+        self.assertIn("items: validItems.map((candidate) => ({ ...candidate }))", source_text)
+        self.assertIn("selection.length === selectedImages.length", source_text)
+        self.assertIn("正在按选择顺序合成 ${selectedImages.length} 张图片", source_text)
+        self.assertIn("sourceItemId: selected.id", source_text)
+        self.assertIn("publishCount={selectedImages.length}", source_text)
+        self.assertIn("将按选择顺序发布 ${publishCount} 张图片", source_text)
+        self.assertIn("e.shiftKey || e.metaKey || e.ctrlKey", source_text)
+        self.assertIn("Mac 按 Command、Windows 按 Ctrl/Shift，或拖框多选", source_text)
+        self.assertIn("Selection alone must stay local", source_text)
+        self.assertIn("if (g.moved && !dd.raised)", source_text)
+        self.assertNotIn("setSelection([item.id]);\n    bringToFront(projectId, item.id);", source_text)
+        self.assertIn("canvasSyncRetryAttempts", source_text)
+        self.assertIn("正在自动重试 ${attempt}/3", source_text)
+        self.assertIn("retryCanvasProjectSync", source_text)
+        self.assertIn("重试同步本地内容", source_text)
         self.assertIn("disabled={!canPublish || publishing}", source_text)
         self.assertIn("renderCanvasOutput", source_text)
         self.assertIn("overlappingMarksFor(selectedImage, reactiveItems)", source_text)

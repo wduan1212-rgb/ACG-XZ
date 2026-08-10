@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -770,6 +771,40 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
                         me={"id": "admin-member", "role": "admin"},
                     )
             self.assertEqual(denied.exception.status_code, 404)
+
+    def test_multiple_members_can_save_independent_projects_concurrently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            jobs = [
+                ("creator-a", "parallel-a-1"),
+                ("creator-a", "parallel-a-2"),
+                ("creator-b", "parallel-b-1"),
+                ("creator-b", "parallel-b-2"),
+            ]
+
+            def save(job):
+                owner_id, source_id = job
+                return owner_id, source_id, store.save_custom_canvas_draft(
+                    owner_id,
+                    source_id,
+                    draft_payload(source_id),
+                )
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results = list(pool.map(save, jobs))
+
+            for owner_id, source_id, (saved, error, outcome) in results:
+                self.assertIsNone(error, (owner_id, source_id, error))
+                self.assertEqual(outcome, "created")
+                self.assertEqual(saved["project"]["sourceId"], source_id)
+            self.assertEqual(
+                {item["sourceId"] for item in store.list_custom_canvas_drafts("creator-a")[0]},
+                {"parallel-a-1", "parallel-a-2"},
+            )
+            self.assertEqual(
+                {item["sourceId"] for item in store.list_custom_canvas_drafts("creator-b")[0]},
+                {"parallel-b-1", "parallel-b-2"},
+            )
 
     def test_migration_is_idempotent_existing_live_wins_and_normal_update_uses_revision(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -115,21 +115,33 @@ export function buildCanvasPublishRequest({
   projectId,
   title,
   item,
+  items,
 }: {
   projectId: string;
   title: string;
-  item: CanvasPublishItem | null | undefined;
+  item?: CanvasPublishItem | null;
+  items?: CanvasPublishItem[] | null;
 }): CanvasPublishRequest | null {
-  if (!item) return null;
-  const validData = /^data:image\/(?:png|jpe?g|webp);base64,/i.test(item.dataUrl);
-  const validUrl = /^(?:https?:\/\/|\/)/i.test(item.url);
-  if (!validData && !validUrl) return null;
+  const candidates = Array.isArray(items) && items.length
+    ? items
+    : item
+      ? [item]
+      : [];
+  if (!candidates.length || candidates.length > 20) return null;
+  const validItems = candidates.filter((candidate) => {
+    const validData = /^data:image\/(?:png|jpe?g|webp);base64,/i.test(candidate.dataUrl);
+    const validUrl = /^(?:https?:\/\/|\/)/i.test(candidate.url);
+    return validData || validUrl;
+  });
+  if (validItems.length !== candidates.length) return null;
   return {
     source: "xingzhen-canvas",
     type: "publish-request",
     projectId,
     title: title.trim() || "无限画布作品",
-    items: [{ ...item }],
+    // The bridge keeps the selection array order intact. The host uses this
+    // exact order as the final image-pack order and polishes every row.
+    items: validItems.map((candidate) => ({ ...candidate })),
   };
 }
 

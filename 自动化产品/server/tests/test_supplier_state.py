@@ -112,6 +112,17 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(first["production"]["serverOnly"], "keep-me")
             self.assertEqual(first["production"]["stage"], "delivered")
             self.assertTrue(first["assets"][0]["shared"])
+            self.assertEqual(
+                first["delivery"]["quotaDayKey"],
+                store._account_publish_day_key(),
+            )
+            self.assertGreater(first["delivery"]["quotaPublishedAt"], 0)
+            self.assertEqual(
+                store.account_publish_quotas(
+                    "creator-a", ["account-static-video"],
+                )["items"][0]["used"],
+                1,
+            )
 
             retried, retry_error = store.publish_production_bundle(
                 "production-static-video", "creator-a", bundle("delivery-static-video-retry"),
@@ -121,6 +132,12 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(retried["delivery"]["pubSeq"], 1)
             self.assertEqual(retried["account"]["monthlyDone"], 3)
             self.assertEqual(retried["account"]["exportSeq"], 5)
+            self.assertEqual(
+                store.account_publish_quotas(
+                    "creator-a", ["account-static-video"],
+                )["items"][0]["used"],
+                1,
+            )
 
     def test_supplier_parent_and_child_receive_served_team_identity(self):
         with tempfile.TemporaryDirectory() as tmp:

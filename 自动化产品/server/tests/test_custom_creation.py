@@ -749,7 +749,7 @@ class CustomCreationStoreTest(unittest.TestCase):
             self.assertEqual(len(succeeded), 2)
             self.assertEqual(
                 rejected,
-                ["account_daily_creation_quota_exceeded"] * 4,
+                ["account_daily_publish_quota_exceeded"] * 4,
             )
             deliveries = [
                 item for item in store.state_for("creator-a", "editor")["assets"]
@@ -872,8 +872,8 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("projectState.sourceProjectId", publishing)
         self.assertIn("projectState.workshopProjectId", publishing)
         self.assertIn("activeCustomPublishModal?.el?.isConnected", publishing)
-        self.assertIn("await refreshAccountCreationQuotas", publishing)
-        self.assertIn("accountCreationAvailable(accountId)", publishing)
+        self.assertIn("await refreshAccountPublishQuotas", publishing)
+        self.assertIn("accountPublishAvailable(accountId)", publishing)
         self.assertIn("assertPublishText({ platform: account.platform", publishing)
         self.assertIn("await openCustomPublish(", shell)
         self.assertIn("coverAccountId !== accountId", publishing)

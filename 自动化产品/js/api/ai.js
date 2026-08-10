@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260810-v141-dashboard-metrics-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -857,7 +857,7 @@ function trimCreativeBrief(text, max = 220) {
 }
 
 function productAliases(product) {
-  return [product?.name, product?.shortName, product?.id]
+  return [product?.name, product?.shortName, product?.id, ...(product?.keywords || [])]
     .filter(Boolean)
     .flatMap(x => String(x).split(/[\/｜|、\s]+/))
     .map(x => x.trim())
@@ -2375,6 +2375,7 @@ export const AI = {
 
   /* ---------- 素材号长视频脚本（60s+，有深度/有梗、利他，画外音后期配；每镜头标 ui/scene） ---------- */
   async generateMaterialScript({ topic, account, style = "", product = null }) {
+    product = primaryProductForText(topic, product);
     const sys = `你是百度 ACG 市场部资深长视频编剧，为指定产品写【素材号】视频脚本：没有固定出镜人物，画面全部由场景/产品界面/实拍素材混剪而成。line 是口播或旁白内容参考。
 
 【时长与篇幅】成片控制在 45-58 秒，绝不超过 60 秒，拆成 8-10 个镜头。每镜头口播只写 1 句，尽量 12-24 个中文字符；宁可少说一点、说清楚一点，确保每句话至少能自然讲 3 秒，不要把口播写得太赶。
@@ -2412,6 +2413,10 @@ export const AI = {
   /* ---------- 素材号：按「分镜单元」生成 图片提示词(先) + 视频提示词(后，呼应图片、多镜头) ----------
      units: [{ scene, needsImage, dur, shotIndexes }]；shots: 全量镜头 */
   async generateUnitPrompts({ units, shots, account, style = "", product = null, hasNarrationAudio = false, hasVoiceRef = false, hasCharacterRef = false, hasSceneRef = false }) {
+    product = primaryProductForText(
+      (shots || []).map(shot => `${shot?.idea || ""} ${shot?.visual || ""} ${shot?.line || ""}`).join("\n"),
+      product,
+    );
     const NEG = videoNegative({ hasNarrationAudio });
     const unitText = units.map((u, i) => {
       const us = (u.shotIndexes || []).map(k => shots[k]).filter(Boolean);
@@ -2690,6 +2695,10 @@ ${productRelationLine(rel.slice(0, 2))}
     aspectRatio = "9:16",
     creationMode = "video",
   }) {
+    product = primaryProductForText(
+      (shots || []).map(shot => `${shot?.idea || ""} ${shot?.visual || ""} ${shot?.line || ""}`).join("\n"),
+      product,
+    );
     const refLine = sharedRefName ? `所有分镜图统一参考「${sharedRefName}」，保持品牌/角色一致。` : "";
     const productName = chineseProductDisplayName(product);
     const staticMode = creationMode === "static";
@@ -2724,6 +2733,10 @@ ${productRelationLine(rel.slice(0, 2))}
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+    product = primaryProductForText(
+      `${safeTopic}\n${copyTitle}\n${copyBody}\n${safeScript}`,
+      product,
+    );
     const copyForPrompt = copy ? { ...copy, title: copyTitle, headline: copyTitle, body: copyBody, copy: copyBody } : null;
     const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${copyBody.slice(0, 2800)}` : ""].filter(Boolean).join("\n");
     const hasCopyBrief = !!copyBrief;
@@ -2736,7 +2749,7 @@ ${productRelationLine(rel.slice(0, 2))}
     styleRefName = modelStyleRefName;
     try {
       const content = await llm([
-        { role: "system", content: `你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。不得使用产品资料库、竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案里明确出现的产品名、软件名和动作可以原样理解，但不能用你记忆中的产品介绍覆盖正文。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
+        { role: "system", content: imagePromptProductBrief(product) + `\n\n你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。产品资料库只用于识别当前产品、校准已确认能力和禁止幻觉，不得覆盖用户主题，也不得使用竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案明确涉及当前产品时，图片里的流程、数据卡、功能标签和视觉证据必须与产品库一致；不能用模型记忆扩写未确认能力。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
 第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后是干货承载页，按正文顺序展开具体信息。每张内页必须有 1 个清楚结论，并从该页分配到的正文里提炼 2—4 个具体支撑项，例如步骤、动作、判断依据、证据、结果、避坑或适用边界；不得为了凑数量补写正文外事实。
 若内容过多，先在内部重新规划：把重要信息均匀分给 ${nImg} 张图，次要内容压成一句结论；若内容较少，只能把正文已有信息改写成例子、结果或边界提醒，不得补入正文之外的产品知识、默认案例或事实。
 同一批量任务的不同账号可以改变每张图的标题表达、主视觉和卡片顺序，但内容事实仍只能来自该账号最终正文。
@@ -2928,6 +2941,7 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   async generateCustomVideoDraft({ title = "", body = "", account = {}, product = null, mode = "digital" } = {}) {
+    product = primaryProductForText(`${title}\n${body}`, product);
     const safeTitle = cleanCustomVideoText(title);
     const safeBody = cleanCustomVideoText(body);
     if (!safeTitle && !safeBody) throw new Error("自定义模式需要填写标题或文案");
@@ -3004,6 +3018,7 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   async generateInfoFlowCreativePlan({ title = "", copy = "", narration = "", account = {}, product = null, previousPrompts = [] } = {}) {
+    product = primaryProductForText(`${title}\n${copy}\n${narration}`, product);
     const safeTitle = cleanInfoFlowDirectorText(title, { stripTags: true });
     const safeCopy = cleanInfoFlowDirectorText(copy, { stripTags: true });
     const safeNarration = cleanInfoFlowDirectorText(narration, { stripTags: true });

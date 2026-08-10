@@ -39,7 +39,7 @@ class AccountCreationAndPublishRulesTest(unittest.TestCase):
         self.assertEqual("editor", joined["role"])
         return admin, member, account
 
-    def test_daily_limit_is_shared_across_team_members_and_server_stamped(self):
+    def test_creations_do_not_consume_shared_quota_but_publishes_do(self):
         admin, member, account = self._team_members_and_account()
         yesterday = int(time.time() * 1000) - 48 * 60 * 60 * 1000
         first = {
@@ -52,18 +52,38 @@ class AccountCreationAndPublishRulesTest(unittest.TestCase):
         }
         store.upsert_member_collection(admin[0], "admin", "productions", [first])
         store.upsert_member_collection(member[0], "editor", "productions", [second])
+        third = {
+            "id": "quota-production-3", "accountId": account["id"],
+            "ownerId": admin[0], "createdAt": yesterday, "updatedAt": yesterday,
+        }
+        store.upsert_member_collection(admin[0], "admin", "productions", [third])
 
-        quota = store.account_creation_quotas(member[0], [account["id"]])
+        quota = store.account_publish_quotas(member[0], [account["id"]])
+        self.assertEqual(0, quota["items"][0]["used"])
+        self.assertEqual(2, quota["items"][0]["remaining"])
+        for production in store.state_for(admin[0], "admin")["productions"]:
+            self.assertNotIn("quotaDayKey", production)
+            self.assertNotIn("quotaPublishedAt", production)
+
+        now = int(time.time() * 1000)
+        day_key = store._account_publish_day_key(now)
+        store.upsert_docs("assets", [{
+            "id": "published-by-admin", "accountId": account["id"],
+            "ownerId": admin[0], "delivered": True,
+            "quotaDayKey": day_key, "quotaPublishedAt": now,
+            "createdAt": now, "updatedAt": now,
+        }, {
+            "id": "published-by-member", "accountId": account["id"],
+            "ownerId": member[0], "delivered": True,
+            "quotaDayKey": day_key, "quotaPublishedAt": now + 1,
+            "createdAt": now + 1, "updatedAt": now + 1,
+        }], actor_id=admin[0])
+
+        quota = store.account_publish_quotas(member[0], [account["id"]])
         self.assertEqual(2, quota["items"][0]["used"])
         self.assertEqual(0, quota["items"][0]["remaining"])
 
-        with self.assertRaises(store.AccountDailyCreationQuotaExceeded):
-            store.upsert_member_collection(admin[0], "admin", "productions", [{
-                "id": "quota-production-3", "accountId": account["id"],
-                "ownerId": admin[0], "createdAt": yesterday, "updatedAt": yesterday,
-            }])
-
-        # Updating an existing production never consumes a second slot.
+        # Updating or creating drafts still never consumes a publish slot.
         first["title"] = "更新标题"
         first["updatedAt"] = int(time.time() * 1000) + 1000
         result = store.upsert_member_collection(admin[0], "admin", "productions", [first])

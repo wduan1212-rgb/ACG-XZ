@@ -4,9 +4,9 @@ import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, isAccountDisabled } from "../domain/accounts.js";
-import { accountCreationQuota } from "../domain/productionQuota.js?v=20260810-v141-dashboard-metrics-1";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260810-v141-dashboard-metrics-1";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260810-v141-dashboard-metrics-1";
+import { accountPublishQuota } from "../domain/productionQuota.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260810-v1412-publish-quota-baige-canvas-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260810-v1412-publish-quota-baige-canvas-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -207,7 +207,7 @@ const CARD = {
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
-        const creationQuota = accountCreationQuota(a.id);
+        const publishQuota = accountPublishQuota(a.id);
         const customCopyMode = customMode;
         const imageCreationMode = imgAcc ? ((p.accountImageCreationModes || {})[a.id] || "copy") : "copy";
         const singleImagePrompt = ((p.accountImagePrompts || {})[a.id] || "").trim();
@@ -237,7 +237,7 @@ const CARD = {
           </div>`}
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}" ${locked ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
-        <div class="agc-override-name"><b>${esc(accountDisplayName(a))}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span><em class="agc-created-today">今日 ${creationQuota.used}/${creationQuota.limit}</em></div>
+        <div class="agc-override-name"><b>${esc(accountDisplayName(a))}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span><em class="agc-published-today">今日发布 ${publishQuota.used}/${publishQuota.limit}</em></div>
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
         ${imgAcc ? "" : customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
         ${copyFields}
@@ -326,12 +326,12 @@ const CARD = {
       <div class="agc-accs">${accountPool.map((a, idx) => {
         const on = (p.accountIds || []).includes(a.id);
         const imgAcc = isImageAcc(a);
-        const quota = accountCreationQuota(a.id);
+        const quota = accountPublishQuota(a.id);
         const quotaFull = quota.remaining <= 0;
-        return `<button class="agc-acc ${on ? "on" : ""} ${quotaFull ? "is-quota-full" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" aria-pressed="${on ? "true" : "false"}" ${(locked || (quotaFull && !on)) ? "disabled" : ""} title="同一账号所有成员今日合计 ${quota.used}/${quota.limit} 条">
+        return `<button class="agc-acc ${on ? "on" : ""} ${quotaFull ? "is-quota-full" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" aria-pressed="${on ? "true" : "false"}" ${(locked || (quotaFull && !on)) ? "disabled" : ""} title="同一账号所有成员今日已发布 ${quota.used}/${quota.limit} 条">
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
           <b>${esc(accountDisplayName(a))}</b>
-          <em class="agc-account-meta"><span class="agc-account-type">${esc(groupOf(a))}</span><span class="agc-created-today">今日 ${quota.used}/${quota.limit}</span></em>
+          <em class="agc-account-meta"><span class="agc-account-type">${esc(groupOf(a))}</span><span class="agc-published-today">今日发布 ${quota.used}/${quota.limit}</span></em>
           <span class="agc-select-mark ${on ? "is-visible" : ""}" aria-hidden="true">${icon("check", 13, "ok")}</span>
         </button>`;
       }).join("")}</div>

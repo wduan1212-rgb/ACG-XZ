@@ -5,11 +5,6 @@
 import { state, save, emit, accountById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, spreadCaption } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import {
-  invalidateAccountCreationQuotas,
-  refreshAccountCreationQuotas,
-  validateAccountCreationRequests,
-} from "./productionQuota.js?v=20260810-v141-dashboard-metrics-1";
 
 export const STAGES = {
   script: { label: "脚本", icon: "fileText" },
@@ -307,7 +302,6 @@ export function createProduction({ accountId, topic = "", origin = "manual", bat
 export async function commitProductionCreations(items = []) {
   const docs = (items || []).filter(item => item?.id && !state.productions.some(existing => existing.id === item.id));
   if (!docs.length) return [];
-  validateAccountCreationRequests(docs);
   if (remote.isOn()) {
     if (!remote.hasToken()) throw new Error("登录已过期，请重新登录后创作");
     await remote.syncCollection("productions", docs);
@@ -315,9 +309,6 @@ export async function commitProductionCreations(items = []) {
   state.productions.push(...docs);
   save("productions");
   docs.forEach(item => emit("production:update", item));
-  const accountIds = [...new Set(docs.map(item => item.accountId).filter(Boolean))];
-  invalidateAccountCreationQuotas(accountIds);
-  void refreshAccountCreationQuotas(accountIds, { force: true });
   return docs;
 }
 

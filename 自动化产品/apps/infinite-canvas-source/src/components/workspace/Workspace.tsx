@@ -103,6 +103,10 @@ export function Workspace({ projectId }: { projectId: string }) {
   const selectedImages = selection
     .map((id) => reactiveItems.find((item) => item.id === id))
     .filter((item): item is ImageItem => !!item && isImageItem(item) && !!item.assetUrl && !item.hidden && !("loading" in item && item.loading));
+  const selectedImagesReady =
+    selection.length > 0 &&
+    selection.length === selectedImages.length &&
+    selectedImages.length <= 20;
   const selectedMark =
     selection.length === 1
       ? reactiveItems.find(
@@ -559,41 +563,51 @@ export function Workspace({ projectId }: { projectId: string }) {
       showPublishNotice("当前账号不包含发布能力。");
       return;
     }
-    if (!selectedImageReady || !selectedImage) {
-      showPublishNotice("当前项目还没有可发布图片，请先生成或上传图片。");
+    if (!selectedImages.length) {
+      showPublishNotice("请先选择一张或多张可发布图片。");
+      return;
+    }
+    if (!selectedImagesReady) {
+      showPublishNotice(selectedImages.length > 20 ? "一次最多发布 20 张图片。" : "所选内容中包含未完成或非图片项目，请重新选择。");
       return;
     }
     setPublishing(true);
     try {
-      const rendered = await renderCanvasOutput({
-        imageItem: selectedImage,
-        marks: overlappingMarksFor(selectedImage, reactiveItems),
-        targetWidth: selectedImage.naturalWidth,
-        targetHeight: selectedImage.naturalHeight,
-        mime: "image/png",
-      });
-      const dataUrl = await blobToDataUrl(rendered.blob);
-      const baseName = (selectedImage.label || project?.name || "无限画布作品")
-        .trim()
-        .replace(/\.[a-z0-9]{2,5}$/i, "")
-        .slice(0, 120);
+      showPublishNotice(`正在按选择顺序合成 ${selectedImages.length} 张图片…`);
+      const items = [];
+      for (let index = 0; index < selectedImages.length; index++) {
+        const selected = selectedImages[index];
+        const rendered = await renderCanvasOutput({
+          imageItem: selected,
+          marks: overlappingMarksFor(selected, reactiveItems),
+          targetWidth: selected.naturalWidth,
+          targetHeight: selected.naturalHeight,
+          mime: "image/png",
+        });
+        const dataUrl = await blobToDataUrl(rendered.blob);
+        const baseName = (selected.label || project?.name || "无限画布作品")
+          .trim()
+          .replace(/\.[a-z0-9]{2,5}$/i, "")
+          .slice(0, 120);
+        items.push({
+          url: "",
+          dataUrl,
+          name: `${baseName || "无限画布作品"}-${index + 1}.png`,
+          mime: "image/png",
+          sourceItemId: selected.id,
+        });
+      }
       const request = buildCanvasPublishRequest({
         projectId,
         title: project?.name || "无限画布作品",
-        item: {
-          url: "",
-          dataUrl,
-          name: `${baseName || "无限画布作品"}.png`,
-          mime: "image/png",
-          sourceItemId: selectedImage.id,
-        },
+        items,
       });
-      if (!request) throw new Error("图片合成结果无效");
+      if (!request) throw new Error("图片合成结果无效或超出 20 张上限");
       if (!postCanvasPublishRequest(request)) {
         showPublishNotice("发布功能仅在星阵主平台的“定制创作”中可用。");
         return;
       }
-      showPublishNotice("已发送选中图片，正在打开发布设置…");
+      showPublishNotice(`已按选择顺序发送 ${items.length} 张图片，正在打开发布设置…`);
     } catch (error) {
       showPublishNotice(
         error instanceof Error ? `发布准备失败：${error.message}` : "发布准备失败，请重试。",
@@ -781,7 +795,8 @@ export function Workspace({ projectId }: { projectId: string }) {
         onShare={requestCommunityShare}
         canExport={selectedImages.length > 0}
         exportCount={selectedImages.length}
-        canPublish={allowPublish && selectedImageReady}
+        canPublish={allowPublish && selectedImagesReady}
+        publishCount={selectedImages.length}
         canShare={selectedImageReady}
         showPublish={allowPublish}
         embedded={IS_PLATFORM_EMBED}
