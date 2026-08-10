@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260809-v141-content-governance-2";
-import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260809-v141-content-governance-2";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
+import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260810-v141-dashboard-metrics-1";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
-import { deliver } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
-import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260809-v141-content-governance-2";
+import { deliver } from "../domain/delivery.js?v=20260810-v141-dashboard-metrics-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260810-v141-dashboard-metrics-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */

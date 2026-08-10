@@ -9,7 +9,7 @@ import {
   invalidateAccountCreationQuotas,
   refreshAccountCreationQuotas,
   validateAccountCreationRequests,
-} from "./productionQuota.js?v=20260809-v141-content-governance-2";
+} from "./productionQuota.js?v=20260810-v141-dashboard-metrics-1";
 
 export const STAGES = {
   script: { label: "脚本", icon: "fileText" },

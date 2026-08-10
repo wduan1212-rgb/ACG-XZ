@@ -4,17 +4,17 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById, refreshDeliveryMetrics } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
-import { STAGES, statusPill } from "../domain/productions.js?v=20260809-v141-content-governance-2";
-import { deliveredAssets } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
+import { STAGES, statusPill } from "../domain/productions.js?v=20260810-v141-dashboard-metrics-1";
+import { deliveredAssets } from "../domain/delivery.js?v=20260810-v141-dashboard-metrics-1";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260809-v141-content-governance-2";
+import { AI } from "../api/ai.js?v=20260810-v141-dashboard-metrics-1";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v141-content-governance-2";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260809-v141-content-governance-2";
-import { emptyState, openModal } from "../ui/components.js?v=20260809-v141-content-governance-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v141-dashboard-metrics-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260810-v141-dashboard-metrics-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260809-v141-content-governance-2";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260810-v141-dashboard-metrics-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -294,13 +294,15 @@ export const overviewView = {
     const analyticsByAssetId = new Map(links
       .filter(row => row.asset?.id)
       .map(row => [row.asset.id, row]));
-    // 默认按供应商逐条保存的 viewCount 汇总到账号；若账号设置了独立总数，则只覆盖
-    // 该账号的汇总展示，不拆分、不回写单条内容。接口快照只补充链接信息。
+    // 播放与曝光都只读取供应商逐条保存的权威字段，再汇总到账号。账号汇总
+    // 永远不拆分、不回写单条内容；接口快照只补充链接和互动信息。
     const viewRows = delivered.map(({ asset, acc }) => {
       const analyticsRow = analyticsByAssetId.get(asset.id);
       const manualViews = Math.max(0, Number(asset.viewCount || 0));
+      const manualExposure = Math.max(0, Number(asset.exposureCount || 0));
       const manualUpdatedAt = Number(asset.viewsUpdatedAt || 0);
-      const hasUpdatedViews = manualUpdatedAt > 0 || manualViews > 0;
+      const exposureUpdatedAt = Number(asset.exposureUpdatedAt || 0);
+      const hasUpdatedMetrics = manualUpdatedAt > 0 || exposureUpdatedAt > 0 || manualViews > 0 || manualExposure > 0;
       return {
         asset,
         acc,
@@ -312,11 +314,16 @@ export const overviewView = {
         } : null),
         latest: analyticsRow?.latest || null,
         views: manualViews,
-        updatedAt: Number(asset.viewsUpdatedAt || asset.publishedUpdatedAt || asset.publishedAt || asset.deliveredAt || asset.createdAt || 0),
-        sourceLabel: manualUpdatedAt > 0 ? "供应商填写" : "历史填写",
-        hasUpdatedViews
+        exposure: manualExposure,
+        updatedAt: Math.max(
+          manualUpdatedAt,
+          exposureUpdatedAt,
+          Number(asset.publishedUpdatedAt || asset.publishedAt || asset.deliveredAt || asset.createdAt || 0),
+        ),
+        sourceLabel: manualUpdatedAt > 0 || exposureUpdatedAt > 0 ? "供应商填写" : "历史填写",
+        hasUpdatedMetrics
       };
-    }).filter(row => row.hasUpdatedViews);
+    }).filter(row => row.hasUpdatedMetrics);
     const viewRowsByAccount = new Map();
     viewRows.forEach(row => {
       const accountId = row.acc?.id || row.asset?.accountId || "";
@@ -326,6 +333,7 @@ export const overviewView = {
     const accountViewRows = accounts.map(acc => {
       const rows = viewRowsByAccount.get(acc.id) || [];
       const derivedViews = rows.reduce((sum, row) => sum + row.views, 0);
+      const derivedExposure = rows.reduce((sum, row) => sum + row.exposure, 0);
       const updatedAt = Math.max(
         ...rows.map(row => Number(row.updatedAt || 0)),
         0,
@@ -334,7 +342,9 @@ export const overviewView = {
         acc,
         rows,
         derivedViews,
+        derivedExposure,
         views: derivedViews,
+        exposure: derivedExposure,
         updatedAt,
         platform: acc.platform || "未知平台",
       };
@@ -345,12 +355,15 @@ export const overviewView = {
         acc: { id: "", name: "未归属账号", platform: "未知平台" },
         rows: unassignedRows,
         derivedViews: unassignedRows.reduce((sum, row) => sum + row.views, 0),
+        derivedExposure: unassignedRows.reduce((sum, row) => sum + row.exposure, 0),
         views: unassignedRows.reduce((sum, row) => sum + row.views, 0),
+        exposure: unassignedRows.reduce((sum, row) => sum + row.exposure, 0),
         updatedAt: Math.max(...unassignedRows.map(row => Number(row.updatedAt || 0)), 0),
         platform: "未知平台",
       });
     }
     const totalViews = accountViewRows.reduce((sum, row) => sum + row.views, 0);
+    const totalExposure = accountViewRows.reduce((sum, row) => sum + row.exposure, 0);
     const totalEngagement = Number(analytics.totalEngagement || 0);
     const fmt = value => Number(value || 0).toLocaleString("zh-CN");
     const memberId = state.ui.currentMemberId || "";
@@ -537,15 +550,30 @@ export const overviewView = {
         viewFilter = { platform: "all", period: "all", start: "", end: "" };
         viewDetailHtml = () => {
           const now = Date.now();
-          const scoped = accountViewRows.filter(row => {
-            const date = dayKey(row.updatedAt || 0);
-            if (viewFilter.platform !== "all" && row.platform !== viewFilter.platform) return false;
-            if (viewFilter.period === "7") return row.updatedAt >= now - 7 * 864e5;
-            if (viewFilter.period === "30") return row.updatedAt >= now - 30 * 864e5;
+          const contentMatchesPeriod = item => {
+            const updatedAt = Number(item.updatedAt || 0);
+            const date = dayKey(updatedAt);
+            if (viewFilter.period === "7") return updatedAt >= now - 7 * 864e5;
+            if (viewFilter.period === "30") return updatedAt >= now - 30 * 864e5;
             if (viewFilter.period === "custom") return (!viewFilter.start || date >= viewFilter.start) && (!viewFilter.end || date <= viewFilter.end);
             return true;
-          }).sort((a, b) => b.views - a.views || b.updatedAt - a.updatedAt || a.acc.name.localeCompare(b.acc.name, "zh-CN"));
+          };
+          const scoped = accountViewRows
+            .filter(row => viewFilter.platform === "all" || row.platform === viewFilter.platform)
+            .map(row => {
+              const rows = row.rows.filter(contentMatchesPeriod);
+              return {
+                ...row,
+                rows,
+                views: rows.reduce((sum, item) => sum + item.views, 0),
+                exposure: rows.reduce((sum, item) => sum + item.exposure, 0),
+                updatedAt: Math.max(...rows.map(item => Number(item.updatedAt || 0)), 0),
+              };
+            })
+            .filter(row => row.rows.length > 0)
+            .sort((a, b) => b.views - a.views || b.exposure - a.exposure || b.updatedAt - a.updatedAt || a.acc.name.localeCompare(b.acc.name, "zh-CN"));
           const total = scoped.reduce((sum, row) => sum + row.views, 0);
+          const exposureTotal = scoped.reduce((sum, row) => sum + row.exposure, 0);
           const filterButton = (kind, value, label) => `<button type="button" class="overview-detail-filter${viewFilter[kind] === value ? " is-active" : ""}" data-view-filter-kind="${esc(kind)}" data-view-filter-value="${esc(value)}">${esc(label)}</button>`;
           const platformButtons = [filterButton("platform", "all", "全部平台"), ...platforms.map(platformName => filterButton("platform", platformName, platformName))].join("");
           const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
@@ -553,20 +581,22 @@ export const overviewView = {
             const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
             const deliveries = row.rows
               .slice()
-              .sort((a, b) => b.views - a.views || b.updatedAt - a.updatedAt)
+              .sort((a, b) => b.views - a.views || b.exposure - a.exposure || b.updatedAt - a.updatedAt)
               .map(item => `<div class="overview-view-delivery">
-                <span><b>${esc(item.asset?.title || item.asset?.name || "未命名交付")}</b><em>${esc(item.sourceLabel)} · ${item.updatedAt ? esc(timeAgo(item.updatedAt)) : "暂无更新时间"}</em></span>
-                <strong>${fmt(item.views)}</strong>
+                <span class="overview-view-content"><b>${esc(item.asset?.title || item.asset?.name || "未命名交付")}</b><em>${esc(item.sourceLabel)} · ${item.updatedAt ? esc(timeAgo(item.updatedAt)) : "暂无更新时间"}</em></span>
+                <span class="overview-view-value is-exposure"><em>曝光量</em><strong>${fmt(item.exposure)}</strong></span>
+                <span class="overview-view-value is-views"><em>播放量</em><strong>${fmt(item.views)}</strong></span>
               </div>`).join("");
             return `<article class="overview-view-account">
-              <header><span><b>${esc(row.acc?.name || "未命名账号")}</b><em>${esc(row.platform)} · ${updated}</em></span><span class="overview-view-account-total"><em>单条合计</em><strong>${fmt(row.views)}</strong></span>${row.acc?.homepageUrl ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>` : ""}</header>
+              <header><span class="overview-view-account-name"><b>${esc(row.acc?.name || "未命名账号")}</b><em>${esc(row.platform)} · ${updated} · ${row.rows.length} 条内容</em></span><span class="overview-view-account-totals"><span><em>曝光合计</em><strong>${fmt(row.exposure)}</strong></span><span><em>播放合计</em><strong>${fmt(row.views)}</strong></span></span>${row.acc?.homepageUrl ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>` : ""}</header>
+              <div class="overview-view-columns" aria-hidden="true"><span>单条内容</span><span>曝光量</span><span>播放量</span></div>
               <div class="overview-view-deliveries">${deliveries || `<div class="overview-task-empty">暂无单条播放量</div>`}</div>
             </article>`;
           }).join("");
           const scopeLabel = viewFilter.period === "all" ? "全部时间" : viewFilter.period === "custom" ? `${viewFilter.start || "开始"} 至 ${viewFilter.end || "今天"}` : `近 ${viewFilter.period} 天`;
-          return `<section class="overview-detail-filter-section"><div><b>按平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div><b>按更新时间</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 个账号 · 累计播放 ${fmt(total)}</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该筛选范围没有账号播放量</div>`}</div>`;
+          return `<section class="overview-view-filterbar"><div class="overview-view-filter-group"><b>平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div class="overview-view-filter-group"><b>更新时间</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range overview-view-custom-range"><b>自定义</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary"><span>${scopeLabel} · ${scoped.length} 个账号</span><strong>累计曝光 ${fmt(exposureTotal)} · 累计播放 ${fmt(total)}</strong></div><div class="overview-task-list overview-view-list">${list || `<div class="overview-task-empty">该筛选范围没有曝光或播放数据</div>`}</div>`;
         };
-        title = `账号累计播放量 · ${accountViewRows.length} 个账号`;
+        title = `内容曝光与播放 · ${accountViewRows.length} 个账号`;
         rows = `<div data-view-detail-content>${viewDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
@@ -599,18 +629,26 @@ export const overviewView = {
           <span><em>内容</em><b>${accountRows.length}</b></span><span><em>播放</em><b>${fmt(sum("views"))}</b></span>
           <span><em>点赞</em><b>${fmt(sum("likes"))}</b></span><span><em>收藏</em><b>${fmt(sum("collects"))}</b></span>
           <span><em>评论</em><b>${fmt(sum("comments"))}</b></span><span><em>分享</em><b>${fmt(sum("shares"))}</b></span>
-        </div>` + accountRows.slice(0, 40).map(row => makeRow(
-          row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
-          `${row.acc?.name || "未命名账号"} · ${row.link.platform || row.acc?.platform || "未知平台"}`,
-          row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开</a>` : "",
-          row.latest ? metricText(row) : "暂无数据快照"
-        )).join("");
+        </div><div class="overview-interaction-columns" aria-hidden="true"><span>内容与发布账号</span><span>播放</span><span>点赞</span><span>收藏</span><span>评论</span><span>分享</span><span></span></div>` + accountRows.slice(0, 40).map(row => {
+          const metrics = row.latest?.metrics || null;
+          const value = field => metrics ? fmt(metrics[field]) : "—";
+          return `<div class="overview-interaction-row${metrics ? "" : " is-empty"}">
+            <span class="overview-interaction-content"><b>${esc(row.link.title || row.asset?.title || row.asset?.name || "未命名内容")}</b><em>${esc(row.acc?.name || "未命名账号")} · ${esc(row.link.platform || row.acc?.platform || "未知平台")}${row.link.lastSyncedAt ? ` · ${esc(timeAgo(row.link.lastSyncedAt))}` : ""}</em></span>
+            <span class="overview-interaction-value"><em>播放</em><b>${value("views")}</b></span>
+            <span class="overview-interaction-value"><em>点赞</em><b>${value("likes")}</b></span>
+            <span class="overview-interaction-value"><em>收藏</em><b>${value("collects")}</b></span>
+            <span class="overview-interaction-value"><em>评论</em><b>${value("comments")}</b></span>
+            <span class="overview-interaction-value"><em>分享</em><b>${value("shares")}</b></span>
+            ${row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开</a>` : `<span class="overview-interaction-no-link">无链接</span>`}
+          </div>`;
+        }).join("");
       }
       openModal(`<div class="mp-head"><b>${esc(title)}</b><button class="icon-btn ghost" data-close title="关闭">${icon("x", 15)}</button></div><div class="overview-task-list">${rows || `<div class="overview-task-empty">暂无可展示的数据</div>`}</div>`, {
         wide: true,
         onMount(panel, close) {
           panel.classList.add("overview-task-panel");
           if (key === "views") panel.classList.add("overview-views-panel");
+          if (key === "interactions" || accountName) panel.classList.add("overview-interactions-panel");
           panel.addEventListener("click", event => {
             const viewFilterButton = event.target.closest("[data-view-filter-kind]");
             if (key === "views" && viewFilterButton && viewFilter && viewDetailHtml) {

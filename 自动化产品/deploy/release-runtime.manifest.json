@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260809-v141-content-governance-2",
+  "releaseId": "20260810-v141-dashboard-metrics-1",
   "fileCount": 58,
-  "totalBytes": 3017493,
+  "totalBytes": 3017489,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100716,
-      "sha256": "71184153904884f5e0c31ddcce63149ef9dead5e8b875bf950c909009fde369d"
+      "size": 100715,
+      "sha256": "d4cf0abca4d92934ee96c5ab4bee0f4cabce58e184dd2b60b45a54f0cdcfac17"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -166,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22379,
-      "sha256": "a3a9af9912b8430809f8b9e818691272c156327a8353844f9f38f708b7bbf76b"
+      "size": 22376,
+      "sha256": "9edc6f5c748510aa5661da7ee4c01a6652ddb3b894a9ea89567f7f0a95f5e75d"
     },
     {
       "path": "deploy/docker_entrypoint.sh",

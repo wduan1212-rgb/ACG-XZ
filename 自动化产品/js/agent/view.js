@@ -4,22 +4,22 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260809-v141-content-governance-2";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260809-v141-content-governance-2";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260809-v141-content-governance-2";
+} from "./orchestrator.js?v=20260810-v141-dashboard-metrics-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260810-v141-dashboard-metrics-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260809-v141-content-governance-2";
-import { deliver } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260810-v141-dashboard-metrics-1";
+import { deliver } from "../domain/delivery.js?v=20260810-v141-dashboard-metrics-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { accountCreationAvailable, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260809-v141-content-governance-2";
+import { accountCreationAvailable, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260810-v141-dashboard-metrics-1";
 
 let mounted = false;
 let rootEl = null;
@@ -597,7 +597,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260809-v141-content-governance-2");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260810-v141-dashboard-metrics-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

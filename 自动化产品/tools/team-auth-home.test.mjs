@@ -166,7 +166,7 @@ test("join-team dialog stays inside the modal content box", async () => {
   assert.doesNotMatch(block, /calc\(100vw/);
 });
 
-test("creator total views modal includes account summaries and delivery-level rows", async () => {
+test("creator metrics modals expose per-content exposure, views, and interaction columns", async () => {
   const [overview, styles] = await Promise.all([
     read("js/views/overview.js"),
     read("styles/views.css"),
@@ -175,8 +175,19 @@ test("creator total views modal includes account summaries and delivery-level ro
   assert.match(overview, /overview-view-delivery/);
   assert.match(overview, /item\.asset\?\.title \|\| item\.asset\?\.name/);
   assert.match(overview, /item\.sourceLabel/);
+  assert.match(overview, /item\.exposure/);
+  assert.match(overview, /row\.rows\.filter\(contentMatchesPeriod\)/);
+  assert.match(overview, /曝光量/);
+  assert.match(overview, /播放量/);
+  assert.match(overview, /overview-view-filterbar/);
+  assert.match(overview, /overview-interaction-row/);
+  assert.match(overview, /overview-interaction-content/);
+  assert.match(overview, /overview-interaction-value/);
   assert.match(styles, /\.overview-views-panel/);
+  assert.match(styles, /\.overview-interactions-panel/);
   assert.match(styles, /\.overview-view-deliveries/);
+  assert.match(styles, /\.overview-view-filterbar/);
+  assert.match(styles, /\.overview-interaction-columns/);
 });
 
 test("home launch keeps binary attachments in a short-lived token registry", async () => {
@@ -379,7 +390,7 @@ test("all runtime modules share the v141 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260809-v141-content-governance-2/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /20260810-v141-dashboard-metrics-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260810-v141-dashboard-metrics-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

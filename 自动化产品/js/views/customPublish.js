@@ -1,16 +1,16 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260809-v141-content-governance-2";
+import { AI } from "../api/ai.js?v=20260810-v141-dashboard-metrics-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260810-v141-dashboard-metrics-1";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260809-v141-content-governance-2";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260810-v141-dashboard-metrics-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260809-v141-content-governance-2";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { accountCreationAvailable, accountCreationQuota, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260809-v141-content-governance-2";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260809-v141-content-governance-2";
+import { accountCreationAvailable, accountCreationQuota, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260810-v141-dashboard-metrics-1";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260810-v141-dashboard-metrics-1";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";

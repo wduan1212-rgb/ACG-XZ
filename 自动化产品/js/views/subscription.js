@@ -1,7 +1,7 @@
 import { esc } from "../core/util.js";
 import { currentMember, currentTeam } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260809-v141-content-governance-2";
+import { openModal, toast } from "../ui/components.js?v=20260810-v141-dashboard-metrics-1";
 
 const PLANS = [
   {
