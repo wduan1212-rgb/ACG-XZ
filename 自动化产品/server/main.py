@@ -2339,13 +2339,13 @@ async def _stop_model_usage_completion_spool_reconciler():
     global _MODEL_USAGE_SPOOL_RECONCILER_TASK
     task = _MODEL_USAGE_SPOOL_RECONCILER_TASK
     _MODEL_USAGE_SPOOL_RECONCILER_TASK = None
-    if not task:
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    await _stop_video_workshop_project_finalizers()
 
 
 def _quota_operation_key(namespace: str, provided: str = "") -> str:
@@ -11281,6 +11281,136 @@ def member_requests_reject(rid: str, me=Depends(require_member)):
 # =========================================================
 _VIDEO_PROJECT_INDEX_TTL_SEC = 5.0
 _VIDEO_PROJECT_INDEX_CACHE = {}
+_VIDEO_WORKSHOP_PROJECT_FINALIZERS = {}
+_VIDEO_WORKSHOP_ACTIVE_STATUSES = {
+    "planning", "generating", "running", "queued", "processing",
+}
+
+
+def _video_workshop_project_payload(project_id: str):
+    """Read one sidecar project checkpoint without calling any provider."""
+
+    project_key = str(project_id or "").strip()
+    if (
+        not project_key
+        or Path(project_key).name != project_key
+        or project_key in {".", ".."}
+    ):
+        raise ValueError("video_workshop_project_id_invalid")
+    root = Path(os.getenv(
+        "VIDEO_WORKSHOP_PROJECTS_DIR",
+        VIDEO_WORKSHOP_ROOT / "data" / "projects",
+    )).expanduser().resolve()
+    path = (root / f"{project_key}.json").resolve()
+    if path.parent != root or path.is_symlink() or not path.is_file():
+        raise FileNotFoundError("video_workshop_project_checkpoint_missing")
+    payload = json.loads(path.read_text("utf-8"))
+    if not isinstance(payload, dict) or str(payload.get("id") or "") != project_key:
+        raise ValueError("video_workshop_project_checkpoint_invalid")
+    digest = hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return payload, digest
+
+
+async def _video_workshop_project_finalizer(
+    me: dict,
+    project_id: str,
+    initial_digest: str = "",
+):
+    """Finish owner-scoped media/usage bookkeeping after the browser closes.
+
+    The sidecar remains the only project-state authority.  This observer reads
+    its existing durable JSON checkpoint and reuses the same idempotent sync,
+    media registration, billing and usage reconciliation path as an authenticated
+    project hydration.  It never submits, polls or retries a provider task.
+    """
+
+    try:
+        configured_interval = float(
+            os.getenv("VIDEO_WORKSHOP_FINALIZE_SECONDS", "5") or "5"
+        )
+    except (TypeError, ValueError, OverflowError):
+        configured_interval = 5.0
+    interval = max(1.0, min(configured_interval, 60.0))
+    last_digest = str(initial_digest or "")
+    last_error = ""
+    while True:
+        try:
+            source, digest = await asyncio.to_thread(
+                _video_workshop_project_payload, project_id,
+            )
+            status = str(source.get("status") or "").strip().lower()
+            if digest != last_digest:
+                await asyncio.to_thread(_sync_video_workshop_project, me, source)
+                last_digest = digest
+            if status not in _VIDEO_WORKSHOP_ACTIVE_STATUSES:
+                return
+            last_error = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+            if error != last_error:
+                print(
+                    "[video-workshop] owner-scoped finalization pending: "
+                    f"project={str(project_id)[:80]} {error}",
+                    file=sys.stderr,
+                )
+                last_error = error
+        await asyncio.sleep(interval)
+
+
+def _schedule_video_workshop_project_finalizer(me: dict, source: dict):
+    """Start at most one in-process observer for one owner/project pair."""
+
+    if runtime_config.is_read_only() or not isinstance(source, dict):
+        return None
+    status = str(source.get("status") or "").strip().lower()
+    project_id = str(source.get("id") or "").strip()
+    member_id = str((me or {}).get("id") or "").strip()
+    if status not in _VIDEO_WORKSHOP_ACTIVE_STATUSES or not project_id or not member_id:
+        return None
+    key = (member_id, project_id)
+    current = _VIDEO_WORKSHOP_PROJECT_FINALIZERS.get(key)
+    if current and not current.done():
+        return current
+    initial_digest = hashlib.sha256(json.dumps(
+        source, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    task = asyncio.create_task(
+        _video_workshop_project_finalizer(
+            dict(me), project_id, initial_digest,
+        ),
+        name=f"video-workshop-finalizer:{member_id[:24]}:{project_id[:48]}",
+    )
+    _VIDEO_WORKSHOP_PROJECT_FINALIZERS[key] = task
+
+    def remove_finished(done):
+        if _VIDEO_WORKSHOP_PROJECT_FINALIZERS.get(key) is done:
+            _VIDEO_WORKSHOP_PROJECT_FINALIZERS.pop(key, None)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(
+                "[video-workshop] finalizer stopped unexpectedly: "
+                f"{exc.__class__.__name__}: {str(exc)[:160]}",
+                file=sys.stderr,
+            )
+
+    task.add_done_callback(remove_finished)
+    return task
+
+
+async def _stop_video_workshop_project_finalizers():
+    tasks = list(_VIDEO_WORKSHOP_PROJECT_FINALIZERS.values())
+    _VIDEO_WORKSHOP_PROJECT_FINALIZERS.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _video_workshop_project_index(member_id: str, force: bool = False):
@@ -12263,9 +12393,10 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             if runtime_config.is_read_only():
                 visible_items.append(_video_workshop_project_response(raw_item, mapped))
             else:
-                visible_items.append(
-                    await asyncio.to_thread(_sync_video_workshop_project, me, raw_item)
-                )
+                visible_items.append(await asyncio.to_thread(
+                    _sync_video_workshop_project, me, raw_item,
+                ))
+                _schedule_video_workshop_project_finalizer(me, raw_item)
         data["items"] = visible_items
         return _video_workshop_json_response(
             data,
@@ -12325,10 +12456,17 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
                 _rewrite_video_workshop_urls(project),
                 server_timing=_video_workshop_timing("speed-version", started),
             )
+        if runtime_config.is_read_only():
+            project_response = _video_workshop_project_response(
+                project, mapped_project,
+            )
+        else:
+            project_response = await asyncio.to_thread(
+                _sync_video_workshop_project, me, project,
+            )
+            _schedule_video_workshop_project_finalizer(me, project)
         return _video_workshop_json_response(
-            _video_workshop_project_response(project, mapped_project)
-            if runtime_config.is_read_only()
-            else await asyncio.to_thread(_sync_video_workshop_project, me, project),
+            project_response,
             server_timing=_video_workshop_timing("project", started),
         )
 
@@ -12370,6 +12508,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             _quota_release_safely(me, reservation)
             _quota_release_safely(me, dialogue_reservation)
             raise
+        _schedule_video_workshop_project_finalizer(me, project)
         if dialogue_reservation:
             synced["_dialogueBilling"] = _quota_billing_public(
                 _quota_settle(me, dialogue_reservation)

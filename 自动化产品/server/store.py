@@ -7084,6 +7084,15 @@ def settle_private_media_registry_incremental(
     a verified database backup, and the dedicated 140006 audit table.  The
     transaction may insert registry rows plus one settlement receipt only; it
     never updates documents, files, owners, teams, or the 140004 ledger row.
+
+    After a reviewed 140010 media-isolation settlement the raw pending count is
+    deliberately non-zero: it includes the frozen missing-media references and
+    public-avatar exemptions.  A later regular file can therefore make the raw
+    audit differ from that immutable baseline before it is registered.  This
+    settlement closes only the *effective* pending delta whose bytes currently
+    exist, whose owner/project evidence is unique, and whose identity has never
+    been isolated.  The transaction commits only when a full recomputation
+    returns to the exact reviewed baseline with zero effective pending rows.
     """
 
     global _initialized
@@ -7125,13 +7134,14 @@ def settle_private_media_registry_incremental(
                 include_database_logical_digest=True,
                 include_media_content_digest=True,
             )
-            if not plan.get("readyForApply"):
-                raise StoreNotReadyError(
-                    "private media settlement preflight failed: "
-                    + ",".join(plan.get("issues") or ["unknown"])
-                )
-            pending = int((plan.get("counts") or {}).get("pendingRows") or 0)
-            if pending == 0:
+            counts = plan.get("counts") or {}
+            effective_pending = int(counts.get("effectivePendingRows") or 0)
+            if effective_pending == 0:
+                if not plan.get("ok"):
+                    raise StoreNotReadyError(
+                        "private media settlement preflight failed: "
+                        + ",".join(plan.get("issues") or ["unknown"])
+                    )
                 previous = conn.execute(
                     "SELECT settlement_id,planned_rows,inserted_rows,registry_rows_after "
                     "FROM private_media_registry_settlements "
@@ -7148,8 +7158,44 @@ def settle_private_media_registry_incremental(
                         previous[3] if previous else (plan.get("counts") or {}).get("registeredRows") or 0
                     ),
                 }
+            blocking_issues = set(plan.get("issues") or []) - {
+                "missingReferencedFiles",
+                "mediaIsolationAuditDrift",
+            }
+            if blocking_issues or not plan.get("dataMigration"):
+                raise StoreNotReadyError(
+                    "private media settlement preflight failed: "
+                    + ",".join(sorted(blocking_issues) or ["data-migration"])
+                )
+            existing_pairs = {
+                (str(row[0]), str(row[1]), str(row[2]))
+                for row in conn.execute(
+                    "SELECT media_kind,media_key,owner_id FROM private_media_registry"
+                ).fetchall()
+            }
+            recoverable_rows = []
+            for kind, key, owner, team_id, proof_kind, proof_id in plan.get("rows") or []:
+                pair = (str(kind), str(key), str(owner))
+                identity = (str(kind), str(key))
+                if pair in existing_pairs:
+                    continue
+                if _private_media_isolation_row_locked(conn, *identity):
+                    continue
+                if identity[0] == "upload" and identity[1].startswith(
+                    "member-avatar-"
+                ):
+                    continue
+                if not _private_media_reference_available_locked(conn, identity):
+                    continue
+                recoverable_rows.append(
+                    (kind, key, owner, team_id, proof_kind, proof_id)
+                )
+            if len(recoverable_rows) != effective_pending:
+                raise StoreNotReadyError(
+                    "private media settlement effective pending set is not exact"
+                )
             plan_digest = hashlib.sha256(json.dumps(
-                plan.get("rows") or [], ensure_ascii=False, separators=(",", ":"),
+                recoverable_rows, ensure_ascii=False, separators=(",", ":"),
             ).encode("utf-8")).hexdigest()
             settlement_id = hashlib.sha256(
                 f"{actual_identity}:{snapshot['manifestSha256']}:"
@@ -7161,40 +7207,34 @@ def settle_private_media_registry_incremental(
                 (settlement_id,),
             ).fetchone()
             if existing:
-                conn.rollback()
-                return {
-                    "ok": True, "applied": False, "reused": True,
-                    "settlementId": settlement_id,
-                    "plannedRows": int(existing[0]), "insertedRows": int(existing[1]),
-                    "registryRows": int(existing[2]),
-                }
-            existing_pairs = {
-                (str(row[0]), str(row[1]), str(row[2]))
-                for row in conn.execute(
-                    "SELECT media_kind,media_key,owner_id FROM private_media_registry"
-                ).fetchall()
-            }
+                raise StoreNotReadyError(
+                    "private media settlement immutable replay drift"
+                )
             now = int(time.time() * 1000)
             inserted = 0
-            for kind, key, owner, team_id, proof_kind, proof_id in plan.get("rows") or []:
-                if (str(kind), str(key), str(owner)) in existing_pairs:
-                    continue
+            for kind, key, owner, team_id, proof_kind, proof_id in recoverable_rows:
                 _register_private_media_locked(
                     conn, kind, key, owner, team_id=team_id,
                     provenance_kind=proof_kind, provenance_id=proof_id, now=now,
                 )
                 inserted += 1
-            if inserted != pending:
-                raise StoreNotReadyError("private media settlement pending row count changed")
+            if inserted != effective_pending:
+                raise StoreNotReadyError(
+                    "private media settlement effective pending row count changed"
+                )
             verification = _private_media_plan_locked(
                 conn,
                 snapshot_manifest_sha256=snapshot["manifestSha256"],
                 snapshot_media_inventory_digest=snapshot["mediaInventoryDigest"],
                 include_media_content_digest=True,
             )
-            if not verification.get("readyForApply") or int(
-                (verification.get("counts") or {}).get("pendingRows") or 0
-            ) != 0:
+            verification_counts = verification.get("counts") or {}
+            if (
+                not verification.get("ok")
+                or int(verification_counts.get("effectivePendingRows") or 0) != 0
+                or int(verification_counts.get("mediaIsolationAuditDrift") or 0)
+                != 0
+            ):
                 raise StoreNotReadyError("private media settlement verification failed")
             registry_rows = int((verification.get("counts") or {}).get("registeredRows") or 0)
             conn.execute(
@@ -7204,7 +7244,7 @@ def settle_private_media_registry_incremental(
                 "created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     settlement_id, actual_identity, snapshot["manifestSha256"],
-                    snapshot["mediaInventoryDigest"], pending, inserted,
+                    snapshot["mediaInventoryDigest"], effective_pending, inserted,
                     registry_rows, now, str(created_by or "deployment")[:120],
                 ),
             )
@@ -7212,8 +7252,15 @@ def settle_private_media_registry_incremental(
             _initialized = False
             return {
                 "ok": True, "applied": bool(inserted), "reused": False,
-                "settlementId": settlement_id, "plannedRows": pending,
-                "insertedRows": inserted, "registryRows": registry_rows,
+                "settlementId": settlement_id,
+                "plannedRows": effective_pending,
+                "insertedRows": inserted,
+                "registryRows": registry_rows,
+                "rawPendingRowsBefore": int(counts.get("pendingRows") or 0),
+                "rawPendingRowsAfter": int(
+                    verification_counts.get("pendingRows") or 0
+                ),
+                "effectivePendingRowsAfter": 0,
             }
         except Exception:
             conn.rollback()

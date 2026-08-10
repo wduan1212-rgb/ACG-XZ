@@ -759,6 +759,123 @@ class PrivateMediaRegistryTest(unittest.TestCase):
             self.assertIsNone(access_error)
             self.assertEqual("owner-a", access["ownerId"])
 
+    def test_incremental_settlement_restores_reviewed_isolation_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            project_id = "workshop-after-isolation"
+            project = {
+                "id": project_id,
+                "name": "隔离后成片",
+                "status": "succeeded",
+                "outputs": [],
+            }
+            mapped, error = store.sync_custom_video_project("owner-a", project)
+            self.assertIsNone(error)
+            self.assertEqual(
+                project_id, mapped["projectState"]["workshopProjectId"],
+            )
+            with store._lock:
+                conn = store._connect()
+                try:
+                    now = 1
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                            "test", now, now, "success", "{}",
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO media_isolation_settlements("
+                        "settlement_id,plan_sha256,database_identity,"
+                        "snapshot_manifest_sha256,snapshot_media_digest,"
+                        "isolated_rows,raw_pending_rows,public_avatar_exemptions,"
+                        "created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            "reviewed-empty-baseline", "a" * 64,
+                            store._database_identity(store.DB_PATH),
+                            "b" * 64, "c" * 64, 0, 0, 0, now, "test",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            output = paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / project_id / "final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"reviewed-video")
+            drifted = store.private_media_registry_status()
+            self.assertEqual(1, drifted["counts"]["pendingRows"])
+            self.assertEqual(1, drifted["counts"]["effectivePendingRows"])
+            self.assertEqual(1, drifted["counts"]["mediaIsolationAuditDrift"])
+            self.assertFalse(drifted["ok"])
+
+            snapshot = runtime_snapshot_binding(
+                "d" * 64, store._private_media_live_inventory_digest(),
+            )
+            with patch.dict(
+                os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"},
+            ):
+                first = store.settle_private_media_registry_incremental(
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, store.DB_PATH),
+                    runtime_snapshot_binding=snapshot,
+                    created_by="test-deployer",
+                )
+            self.assertTrue(first["applied"])
+            self.assertEqual(1, first["plannedRows"])
+            self.assertEqual(1, first["insertedRows"])
+            self.assertEqual(1, first["rawPendingRowsBefore"])
+            self.assertEqual(0, first["rawPendingRowsAfter"])
+            settled = store.private_media_registry_status()
+            self.assertTrue(settled["ok"])
+            self.assertEqual(0, settled["counts"]["effectivePendingRows"])
+            self.assertEqual(0, settled["counts"]["mediaIsolationAuditDrift"])
+
+            before_replay = logical_database_dump(store.DB_PATH)
+            with patch.dict(
+                os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"},
+            ):
+                replay = store.settle_private_media_registry_incremental(
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, store.DB_PATH),
+                    runtime_snapshot_binding=snapshot,
+                    created_by="test-deployer",
+                )
+            self.assertFalse(replay["applied"])
+            self.assertTrue(replay["reused"])
+            self.assertEqual(0, replay["insertedRows"])
+            self.assertEqual(before_replay, logical_database_dump(store.DB_PATH))
+
+            with store._connect() as conn:
+                conn.execute(
+                    "DELETE FROM private_media_registry "
+                    "WHERE media_kind='video-output' AND media_key=?",
+                    (f"{project_id}/final.mp4",),
+                )
+                conn.commit()
+            with patch.dict(
+                os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"},
+            ):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "immutable replay drift",
+                ):
+                    store.settle_private_media_registry_incremental(
+                        expected_identity=store._database_identity(store.DB_PATH),
+                        expected_schema_version=(
+                            store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=current_backup_binding(store, store.DB_PATH),
+                        runtime_snapshot_binding=snapshot,
+                        created_by="test-deployer",
+                    )
+
     def test_nonempty_data_migration_is_atomic_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)

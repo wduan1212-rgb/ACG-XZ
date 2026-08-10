@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from starlette.requests import Request
 
@@ -72,6 +73,53 @@ class ReadOnlyVideoIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_read_only_session_post_is_explicitly_allowlisted(self):
         self.assertIn("/api/custom-video/session", main._READ_ONLY_ALLOWED_POST_PATHS)
+
+    async def test_owner_scoped_finalizer_reuses_sync_until_terminal_checkpoint(self):
+        active = {"id": "workshop-finalize", "status": "generating"}
+        terminal = {"id": "workshop-finalize", "status": "succeeded"}
+        loader = MagicMock(side_effect=[(active, "a" * 64), (terminal, "b" * 64)])
+        sync_project = MagicMock(return_value={"ok": True})
+        with (
+            patch.object(main, "_video_workshop_project_payload", loader),
+            patch.object(main, "_sync_video_workshop_project", sync_project),
+            patch.object(main.asyncio, "sleep", new=AsyncMock(return_value=None)),
+            patch.dict("os.environ", {"VIDEO_WORKSHOP_FINALIZE_SECONDS": "1"}),
+        ):
+            await main._video_workshop_project_finalizer(
+                {"id": "member-1", "teamId": "team-1"},
+                "workshop-finalize",
+            )
+
+        self.assertEqual(2, loader.call_count)
+        self.assertEqual(
+            [active, terminal],
+            [call.args[1] for call in sync_project.call_args_list],
+        )
+
+    async def test_owner_scoped_finalizer_is_deduplicated_per_member_project(self):
+        blocker = asyncio.Event()
+
+        async def wait_for_stop(*_args, **_kwargs):
+            await blocker.wait()
+
+        source = {"id": "workshop-deduplicated", "status": "generating"}
+        with (
+            patch.object(main.runtime_config, "is_read_only", return_value=False),
+            patch.object(
+                main, "_video_workshop_project_finalizer",
+                side_effect=wait_for_stop,
+            ),
+        ):
+            first = main._schedule_video_workshop_project_finalizer(
+                {"id": "member-1"}, source,
+            )
+            second = main._schedule_video_workshop_project_finalizer(
+                {"id": "member-1"}, source,
+            )
+            self.assertIs(first, second)
+            self.assertEqual(1, len(main._VIDEO_WORKSHOP_PROJECT_FINALIZERS))
+            await main._stop_video_workshop_project_finalizers()
+            self.assertEqual({}, main._VIDEO_WORKSHOP_PROJECT_FINALIZERS)
 
 
 if __name__ == "__main__":
