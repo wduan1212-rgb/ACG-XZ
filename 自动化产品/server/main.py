@@ -594,6 +594,7 @@ def _exact_media_registry_exception_matches(checks):
     issues = set(str(item) for item in (media.get("issues") or []))
     allowed_issues = {
         "missingReferencedFiles",
+        "registryMissingFiles",
         "unisolatedMissingReferencedFiles",
     }
     return bool(
@@ -603,6 +604,8 @@ def _exact_media_registry_exception_matches(checks):
             expected_digest,
         )
         and int(counts.get("unisolatedMissingReferencedFiles") or 0)
+        == int(expected_count_text)
+        and int(counts.get("registryMissingFiles") or 0)
         == int(expected_count_text)
         and int(counts.get("effectivePendingRows") or 0) == 0
         and issues

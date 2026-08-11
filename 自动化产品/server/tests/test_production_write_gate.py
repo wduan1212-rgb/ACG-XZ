@@ -285,11 +285,13 @@ uvicorn.run(
             "ok": False,
             "issues": [
                 "missingReferencedFiles",
+                "registryMissingFiles",
                 "unisolatedMissingReferencedFiles",
             ],
             "missingReferencedFilesSha256": digest,
             "counts": {
                 "unisolatedMissingReferencedFiles": 1,
+                "registryMissingFiles": 1,
                 "effectivePendingRows": 0,
             },
         }
@@ -311,7 +313,7 @@ uvicorn.run(
 
         for mutation in (
             {"missingReferencedFilesSha256": "b" * 64},
-            {"counts": {"unisolatedMissingReferencedFiles": 2, "effectivePendingRows": 0}},
+            {"counts": {"unisolatedMissingReferencedFiles": 2, "registryMissingFiles": 2, "effectivePendingRows": 0}},
             {"issues": ["registryConflicts"]},
         ):
             with self.subTest(mutation=mutation):
