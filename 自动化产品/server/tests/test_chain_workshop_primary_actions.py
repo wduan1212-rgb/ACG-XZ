@@ -11,7 +11,11 @@ class ChainWorkshopPrimaryActionsTest(unittest.TestCase):
 
         self.assertEqual(workshop.count('id="wsNext"'), 1)
         self.assertIn('class="ws-topic-actions"', workshop)
-        self.assertIn('class="btn gen sm" id="wsBriefGenerate"', workshop)
+        self.assertIn('class="btn gen sm"', workshop)
+        self.assertIn(
+            'A.materialMode === "creativeVideo" ? "data-creative-video-submit" : \'id="wsBriefGenerate"\'',
+            workshop,
+        )
         self.assertIn(
             'class="btn primary button-anthe" id="wsNext"><span>下一步：智能混剪',
             workshop,
@@ -19,7 +23,7 @@ class ChainWorkshopPrimaryActionsTest(unittest.TestCase):
 
         actions_start = workshop.index('class="ws-topic-actions"')
         actions_end = workshop.index("</div>", actions_start)
-        generate_at = workshop.index('id="wsBriefGenerate"', actions_start, actions_end)
+        generate_at = workshop.index('class="btn gen sm"', actions_start, actions_end)
         next_at = workshop.index('id="wsNext"', actions_start, actions_end)
         self.assertLess(generate_at, next_at)
 

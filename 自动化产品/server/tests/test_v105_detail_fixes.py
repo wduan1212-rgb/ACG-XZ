@@ -113,7 +113,7 @@ class V105DetailFixesTest(unittest.TestCase):
         accounts = self.read("js/domain/accounts.js")
         cards = self.read("js/agent/cards.js")
         studio = self.read("js/views/studio.js")
-        self.assertIn('kind !== "video" || groupOf(account) === "素材"', publishing)
+        self.assertIn('account.mode === expectedMode', publishing)
         self.assertIn("accountPublishQuota(account.id)", publishing)
         self.assertIn("export function accountCreatedToday", accounts)
         self.assertIn("accountPublishQuota(a.id)", cards)

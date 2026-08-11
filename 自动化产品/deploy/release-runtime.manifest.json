@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260811-v1423-batch-video-editor-1",
   "fileCount": 65,
-  "totalBytes": 3311104,
+  "totalBytes": 3311650,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 121604,
-      "sha256": "11533a662b098e6eff914e8855faba490e85e3bdda187ef6f2acbdf5dd8e06ae"
+      "size": 122150,
+      "sha256": "650d08d7987440967153d28f3907bf51bb0002e7421e8871a39dfd82f677e17e"
     },
     {
       "path": "apps/video-workshop/app/media.py",

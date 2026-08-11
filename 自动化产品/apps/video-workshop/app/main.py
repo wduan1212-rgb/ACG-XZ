@@ -16,7 +16,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conlist
 
 from .bgm import bgm_library
 from .config import settings
@@ -106,8 +106,20 @@ class Attachment(BaseModel):
     dataUrl: str
 
 
+def _bounded_list_type(item_type: Any, *, minimum: int, maximum: int):
+    """Keep list bounds enforced on both locked Pydantic runtimes."""
+
+    try:
+        return conlist(item_type, min_length=minimum, max_length=maximum)
+    except TypeError:
+        return conlist(item_type, min_items=minimum, max_items=maximum)
+
+
+AttachmentBatch = _bounded_list_type(Attachment, minimum=1, maximum=8)
+
+
 class ProjectAssetUploadRequest(BaseModel):
-    attachments: list[Attachment] = Field(min_length=1, max_length=8)
+    attachments: AttachmentBatch
 
 
 class ChatRequest(BaseModel):
@@ -171,11 +183,16 @@ class TimelineSoundEffectEdit(BaseModel):
     volume: float = Field(default=0.72, ge=0, le=1.5)
 
 
+TimelineClipBatch = _bounded_list_type(TimelineClipEdit, minimum=1, maximum=120)
+TimelineOverlayBatch = _bounded_list_type(TimelineOverlayEdit, minimum=0, maximum=24)
+TimelineSoundEffectBatch = _bounded_list_type(TimelineSoundEffectEdit, minimum=0, maximum=80)
+
+
 class TimelineRevisionRequest(BaseModel):
     outputId: str = Field(min_length=1, max_length=180)
-    clips: list[TimelineClipEdit] = Field(min_length=1, max_length=120)
-    overlays: list[TimelineOverlayEdit] = Field(default_factory=list, max_length=24)
-    soundEffects: list[TimelineSoundEffectEdit] = Field(default_factory=list, max_length=80)
+    clips: TimelineClipBatch
+    overlays: TimelineOverlayBatch = Field(default_factory=list)
+    soundEffects: TimelineSoundEffectBatch = Field(default_factory=list)
     bgmSelection: str = Field(default="keep", max_length=540)
     narrationVolume: float = Field(default=1.0, ge=0, le=2)
     bgmVolume: float = Field(default=0.12, ge=0, le=1)

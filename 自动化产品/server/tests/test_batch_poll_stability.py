@@ -406,7 +406,9 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn('idempotencyKey: operationKey', orchestrator)
         self.assertIn('batchImageRetryAction(imageItems)', orchestrator)
         self.assertIn('retryAction === "confirm"', orchestrator)
-        self.assertIn('error?.outcomeUnknown || Number(error?.status || 0) === 409', providers)
+        self.assertIn("const providerResultUnknown = error?.outcomeUnknown", providers)
+        self.assertIn('error?.code === "IMAGE_PROVIDER_RESULT_UNKNOWN"', providers)
+        self.assertIn("|| Number(error?.status || 0) === 409", providers)
         self.assertIn('await imageOperationStatus(ref)', providers)
         self.assertIn('deferred.outcomeUnknown = true', providers)
 

@@ -516,7 +516,8 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
 
         self.assertIn('p.mode === "视频" && !p.staticVideo', cards)
-        self.assertIn('p.staticVideo ? "" : `<button class="btn ghost sm" data-pd="workbench"', drawer)
+        self.assertIn('p.staticVideo ? "" : isImg', drawer)
+        self.assertIn('<button class="btn ghost sm" data-pd="workbench"', drawer)
         self.assertIn('if (p.staticVideo)', view)
         self.assertIn("静态视频不支持单独微调，请从批次中重试整条任务", view)
         self.assertIn('if (p.staticVideo) throw new Error("静态视频不支持单独微调，请从批次中重试整条任务")', orchestrator)

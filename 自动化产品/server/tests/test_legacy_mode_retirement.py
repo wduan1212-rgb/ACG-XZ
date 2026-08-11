@@ -21,8 +21,8 @@ class LegacyModeRetirementTest(unittest.TestCase):
         self.assertNotIn("renderRenderPage", studio)
         self.assertNotIn("renderScriptPage", studio)
         self.assertIn('workshop: { label: "视频制作"', productions)
-        self.assertIn('p.subType === "数字人" ? "数字人制作" : "信息流制作"', studio)
-        self.assertIn('acc.subType === "数字人" ? "数字人制作" : "信息流制作"', main)
+        self.assertIn('p.subType === "数字人" ? "数字人制作" : "创意视频制作"', studio)
+        self.assertIn('acc.subType === "数字人" ? "数字人制作" : "创意视频制作"', main)
         for retired in ("chainScript.js", "chainPrompts.js", "chainRender.js"):
             self.assertFalse((APP_DIR / "js/views" / retired).exists(), retired)
 
@@ -114,8 +114,8 @@ console.log(JSON.stringify({
         data = json.loads(result.stdout.strip())
         self.assertEqual(data["digitalMode"], "digitalHuman")
         self.assertEqual(data["digitalLegacy"], "seedance")
-        self.assertEqual(data["materialMode"], "infoFlow")
-        self.assertEqual(data["materialUiMode"], "infoFlow")
+        self.assertEqual(data["materialMode"], "creativeVideo")
+        self.assertEqual(data["materialUiMode"], "creativeVideo")
         self.assertEqual(data["materialLegacy"], "standard")
         self.assertTrue(data["prepared"]["ready"])
         self.assertGreater(data["calls"], 0)

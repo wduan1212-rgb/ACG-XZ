@@ -880,7 +880,7 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("output.customProjectId || output.projectId", delivery)
         self.assertNotIn("image.accountId = acc.id", delivery)
         self.assertIn("forceNew = false", assets)
-        self.assertIn("syncCollection(name, items)", remote)
+        self.assertIn("export function syncCollection(name, items, {", remote)
         self.assertIn("ensureRemoteCustomProject(output, kind, title)", publishing)
         self.assertIn("remote.customProjects.publish(", publishing)
         self.assertIn('remote.holdCollectionSync(["assets", "accounts"])', publishing)

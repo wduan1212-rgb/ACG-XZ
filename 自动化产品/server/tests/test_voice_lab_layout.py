@@ -82,14 +82,14 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         self.assertIn('class="vl-mode-tabs vl-editor-mode-tabs"', source)
         self.assertIn('class="vl-mode-switch-label">切换模式', source)
         self.assertIn(
-            '<button class="btn primary sm button-anthe vl-generate-action" id="vlGenerate"><span>',
+            '<button class="btn primary sm vl-generate-action" id="vlGenerate"><span>',
             source,
         )
         self.assertIn('生成音频 ${icon("arrowRight", 13)}</span></button>', source)
         self.assertIn(".vl-console .vl-section-head.compact .vl-generate-action", styles)
         self.assertRegex(
             styles,
-            r"\.vl-console \.vl-section-head\.compact \.vl-generate-action\s*\{[^}]*margin-left:\s*auto;[^}]*margin-right:\s*-20px;",
+            r"\.vl-console \.vl-section-head\.compact \.vl-generate-action\s*\{[^}]*margin-left:\s*auto;[^}]*margin-right:\s*0;",
         )
         self.assertIn('wireVoiceDock($(".vl-editor-mode-tabs", root), stableRerender)', source)
         self.assertIn('const stableEditor = $(".vl-editor", root);', source)
