@@ -1,5 +1,5 @@
 const mounted = new WeakMap();
-const CUSTOM_VIDEO_FRAME_RELEASE = "20260811-v1423-batch-video-editor-1";
+const CUSTOM_VIDEO_FRAME_RELEASE = "20260811-v1424-creative-reference-1";
 
 function normalizedOutput(raw) {
   const source = raw && typeof raw === "object" ? raw : {};

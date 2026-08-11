@@ -44,7 +44,7 @@ final result: passed
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-greeting-thinking-final-9.png`
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-greeting-final-9.png`
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-running-scope-menu-final-15.png`
-- implementation state: `http://127.0.0.1:8787/?qa=v1420-generation-resilience-1#/custom/video/d2bbf44b8928`，加载资源身份 `20260811-v1423-batch-video-editor-1`。
+- implementation state: `http://127.0.0.1:8787/?qa=v1420-generation-resilience-1#/custom/video/d2bbf44b8928`，加载资源身份 `20260811-v1424-creative-reference-1`。
 - viewport: 两个最终页面均在 `1280×720` CSS px 验证；单页截图均为 `1280×720` px。
 
 ## Full-view comparison evidence

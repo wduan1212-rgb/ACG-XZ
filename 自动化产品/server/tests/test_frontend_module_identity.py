@@ -35,13 +35,13 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260811-v1423-batch-video-editor-1",
-            "prodDrawer.js": "v=20260811-v1423-batch-video-editor-1",
-            "deliveryView.js": "v=20260811-v1423-batch-video-editor-1",
-            "supplierViews.js": "v=20260811-v1423-batch-video-editor-1",
-            "draftsView.js": "v=20260811-v1423-batch-video-editor-1",
-            "chainWorkshop.js": "v=20260811-v1423-batch-video-editor-1",
-            "orchestrator.js": "v=20260811-v1423-batch-video-editor-1",
+            "studio.js": "v=20260811-v1424-creative-reference-1",
+            "prodDrawer.js": "v=20260811-v1424-creative-reference-1",
+            "deliveryView.js": "v=20260811-v1424-creative-reference-1",
+            "supplierViews.js": "v=20260811-v1424-creative-reference-1",
+            "draftsView.js": "v=20260811-v1424-creative-reference-1",
+            "chainWorkshop.js": "v=20260811-v1424-creative-reference-1",
+            "orchestrator.js": "v=20260811-v1424-creative-reference-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -52,7 +52,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
     def test_llm_client_and_consumers_share_current_cache_identity(self):
         expected = {
             "llm.js": "v=20260727-v118-7",
-            "ai.js": "v=20260811-v1423-batch-video-editor-1",
+            "ai.js": "v=20260811-v1424-creative-reference-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -64,21 +64,21 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         imports = self._module_imports("components.js")
         self.assertGreaterEqual(len(imports), 2)
         queries = {specifier.partition("?")[2] for _, specifier in imports}
-        self.assertEqual({"v=20260811-v1423-batch-video-editor-1"}, queries, imports)
+        self.assertEqual({"v=20260811-v1424-creative-reference-1"}, queries, imports)
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260811-v1423-batch-video-editor-1")', source)
+        self.assertIn('import("./customPublish.js?v=20260811-v1424-creative-reference-1")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260811-v1423-batch-video-editor-1",
-            "components.css": "v=20260811-v1423-batch-video-editor-1",
-            "views.css": "v=20260811-v1423-batch-video-editor-1",
-            "agent.css": "v=20260811-v1423-batch-video-editor-1",
-            "ui-motion.css": "v=20260811-v1423-batch-video-editor-1",
-            "custom-creation.css": "v=20260811-v1423-batch-video-editor-1",
+            "base.css": "v=20260811-v1424-creative-reference-1",
+            "components.css": "v=20260811-v1424-creative-reference-1",
+            "views.css": "v=20260811-v1424-creative-reference-1",
+            "agent.css": "v=20260811-v1424-creative-reference-1",
+            "ui-motion.css": "v=20260811-v1424-creative-reference-1",
+            "custom-creation.css": "v=20260811-v1424-creative-reference-1",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

@@ -4,9 +4,9 @@ import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, isAccountDisabled } from "../domain/accounts.js";
-import { accountPublishQuota } from "../domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260811-v1423-batch-video-editor-1";
+import { accountPublishQuota } from "../domain/productionQuota.js?v=20260811-v1424-creative-reference-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260811-v1424-creative-reference-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260811-v1424-creative-reference-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -521,8 +521,31 @@ export function boardRow(p) {
     ? p.artifacts.images?.items?.find(item => item.assetId)?.assetId
     : p.artifacts.boards?.cover?.assetId;
   const previewUrl = previewAssetId ? urlFor(previewAssetId) : "";
+  const cover = p.artifacts?.boards?.cover || {};
+  const storyboardSheet = p.artifacts?.boards?.creativeVideo?.storyboardSheet || {};
+  const coverState = previewUrl
+    ? "封面可预览"
+    : cover.status === "loading"
+      ? "封面生成中"
+      : cover.status === "failed" || cover.error
+        ? "封面生成失败"
+        : "封面待生成";
+  const storyboardState = p.subType === "无数字人"
+    ? storyboardSheet.assetId
+      ? "故事板已生成"
+      : storyboardSheet.status === "loading"
+        ? "故事板生成中"
+        : storyboardSheet.status === "failed" || storyboardSheet.error
+          ? "故事板生成失败"
+          : "故事板待生成"
+    : "";
+  const preview = previewUrl
+    ? `<span class="mb-preview"><img src="${esc(previewUrl)}" alt="${p.mode === "图文" ? "首图" : "视频封面"}"/></span>`
+    : p.mode === "视频"
+      ? `<span class="mb-preview is-placeholder" aria-label="${esc(coverState)}">${icon("image", 14)}<small>${esc(coverState.replace("封面", ""))}</small></span>`
+      : "";
   return `<div class="mb-row ${p.stageStatus === "running" ? "is-running" : ""}" data-act="open-prod" data-pid="${p.id}" data-dropprod="${p.id}" role="button">
-    ${previewUrl ? `<span class="mb-preview"><img src="${previewUrl}" alt="${p.mode === "图文" ? "首图" : "视频封面"}"/></span>` : ""}
+    ${preview}
     <div class="mb-top">
       <span class="mb-type ${TYPE[1]}">${esc(TYPE[0])}</span>
       <b>${esc(acc?.name || "")}</b>
@@ -530,7 +553,8 @@ export function boardRow(p) {
       <button class="mb-del" data-proddel="${p.id}" title="删除任务">${icon("x", 11)}</button>
     </div>
     <div class="mb-title">${esc(p.artifacts.copy.title || p.title || p.topic || "未命名")}</div>
+    ${p.mode === "视频" ? `<div class="mb-media-state ${cover.error || storyboardSheet.error ? "has-error" : ""}">${storyboardState ? `${esc(storyboardState)} · ` : ""}${esc(coverState)}</div>` : ""}
     <div class="mb-dots">${dots}${sub}</div>
-    ${p.mode === "视频" && !p.staticVideo ? `<div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 封面</button><button type="button" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 10)} 重生视频</button></div>` : ""}
+    ${p.mode === "视频" && !p.staticVideo ? `<div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 预览/调整封面</button><button type="button" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 10)} 重生视频</button></div>` : ""}
   </div>`;
 }

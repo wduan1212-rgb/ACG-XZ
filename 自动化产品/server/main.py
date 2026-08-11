@@ -5263,6 +5263,12 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
     resolved_images = resolved_images[:9]
     resolved_videos = resolved_videos[:3]
     resolved_audios = resolved_audios[:3]
+    if req.creative and unresolved_local_images:
+        raise HTTPException(
+            400,
+            "Seedance 2.5 创意视频的故事板或统一参考图当前无法被上游读取；"
+            "已停止提交，系统不会降级为纯文本出片。请确认参考图可读取后重试。",
+        )
     if unresolved_local_images:
         # 本地调试时 localhost/dataURL 参考图无法被 Seedance 上游读取。图片参考降级为纯文本生成，
         # 避免卡死创作；音频参考仍需真实可访问 URL，因为它会影响生成声音。
@@ -5312,6 +5318,7 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
         surface="video-workspace",
     )
     lease_token = await _video_task_gate().acquire()
+    creative_reference_rejected = False
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
             r = await _queued_video_post(
@@ -5332,22 +5339,25 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
                         usage_attempts.latest,
                         response=r,
                     )
-                    fallback_content = [{
-                        "type": "text",
-                        "text": (
-                            "参考图当前无法被 Seedance 上游读取，本次自动降级为纯文本生成；"
-                            "请按提示词里的文字描述完成画面，不要因为参考图不可读而失败。\n"
-                            + req.prompt.strip()
-                        ),
-                    }]
-                    fallback_payload = _video_payload(req, fallback_content)
-                    r = await _queued_video_post(
-                        client,
-                        _video_submit_url(),
-                        json=fallback_payload,
-                        headers=headers,
-                        attempt_ledger=usage_attempts,
-                    )
+                    if req.creative:
+                        creative_reference_rejected = True
+                    else:
+                        fallback_content = [{
+                            "type": "text",
+                            "text": (
+                                "参考图当前无法被 Seedance 上游读取，本次自动降级为纯文本生成；"
+                                "请按提示词里的文字描述完成画面，不要因为参考图不可读而失败。\n"
+                                + req.prompt.strip()
+                            ),
+                        }]
+                        fallback_payload = _video_payload(req, fallback_content)
+                        r = await _queued_video_post(
+                            client,
+                            _video_submit_url(),
+                            json=fallback_payload,
+                            headers=headers,
+                            attempt_ledger=usage_attempts,
+                        )
     except asyncio.CancelledError as exc:
         await usage_attempts.mark_latest(exc, definitive=False)
         await _video_task_gate().release_token(lease_token)
@@ -5367,6 +5377,11 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
             )
         except Exception:
             detail = _normalize_provider_error(r.text[:800])
+        if creative_reference_rejected:
+            detail = (
+                "Seedance 2.5 未能读取故事板或统一参考图；任务已停止，"
+                "没有降级为纯文本出片。请检查参考图后重试。"
+            )
         error = HTTPException(r.status_code, detail)
         await usage_attempts.mark_latest(
             error,

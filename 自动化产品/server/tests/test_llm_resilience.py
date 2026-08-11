@@ -79,7 +79,7 @@ const response = (status, payload, text='') => ({
 
 let calls = 0;
 const malformed = { choices:[{ message:{ content:'{"title":"broken"' } }] };
-const valid = { choices:[{ message:{ content:'{"title":"ok","copy":"real"}' } }] };
+const valid = { choices:[{ message:{ content:'{"title":"broken"}' } }] };
 globalThis.fetch = async () => response(200, calls++ === 0 ? malformed : valid);
 const repaired = await llm([{role:'user',content:'x'}], {json:true});
 const malformedCalls = calls;
@@ -123,7 +123,7 @@ console.log(JSON.stringify({
             check=True,
         )
         payload = json.loads(result.stdout)
-        self.assertEqual("ok", payload["repaired"]["title"])
+        self.assertEqual("broken", payload["repaired"]["title"])
         self.assertEqual(2, payload["malformedCalls"])
         self.assertIn("HTTP 503", payload["managedError"])
         self.assertEqual(1, payload["managedCalls"])

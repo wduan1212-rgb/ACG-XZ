@@ -6,6 +6,6 @@
     "verify:esm-contract": "python3 tools/verify_release_contracts.py esm",
     "verify:canvas-contract": "python3 tools/verify_release_contracts.py canvas",
     "verify:runtime-contract": "python3 tools/verify_release_contracts.py runtime",
-    "build:runtime-manifest": "python3 tools/build_release_runtime_manifest.py --release-id 20260811-v1423-batch-video-editor-1"
+    "build:runtime-manifest": "python3 tools/build_release_runtime_manifest.py --release-id 20260811-v1424-creative-reference-1"
   }
 }

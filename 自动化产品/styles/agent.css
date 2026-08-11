@@ -786,6 +786,8 @@
 .mb-row.drag-over { border-color: #7C9AFF; border-left-color: #7C9AFF; background: rgba(80, 110, 255, .12); box-shadow: var(--d-glow); }
 .mb-preview { float: left; width: 38px; height: 50px; margin: 0 9px 4px 0; border-radius: 7px; overflow: hidden; background: rgba(255,255,255,.06); }
 .mb-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mb-preview.is-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--d-faint); border: 1px dashed rgba(255,255,255,.12); }
+.mb-preview.is-placeholder small { max-width: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
 /* 用 grid 显式分列：类型(auto) 账号名(可压缩 1fr) 状态(auto) 删除(auto)，状态药丸永远只占内容宽 */
 .mb-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 7px; }
 .mb-type { font-size: 9px; font-weight: 800; letter-spacing: .04em; border-radius: 5px; padding: 1.5px 6px; }
@@ -798,6 +800,8 @@
 .mb-row:hover .mb-del { opacity: 1; }
 .mb-del:hover { color: #FF8787; background: rgba(224, 49, 49, .15); }
 .mb-title { font-size: 11px; color: var(--d-muted); margin: 6px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mb-media-state { margin: -3px 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--d-faint); font-size: 9.5px; }
+.mb-media-state.has-error { color: #FF8787; }
 .mb-dots { display: flex; align-items: center; gap: 0; }
 
 .static-agent-row {

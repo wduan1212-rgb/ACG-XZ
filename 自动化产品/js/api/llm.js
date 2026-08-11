@@ -108,6 +108,77 @@ function jsonModelTextIsValid(text = "") {
   }
 }
 
+function jsonRepairWasRejected(text = "") {
+  let source = String(text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start >= 0 && end > start) source = source.slice(start, end + 1);
+  try {
+    return JSON.parse(source)?.__json_repair_failed__ === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildJsonRepairMessages(originalMessages = [], invalidText = "") {
+  const contract = (originalMessages || [])
+    .filter(message => ["system", "user"].includes(String(message?.role || "")))
+    .map(message => `${message.role}: ${String(message?.content || "")}`)
+    .join("\n\n")
+    .slice(-12000);
+  return [
+    {
+      role: "system",
+      content: "你是严格 JSON 格式修复器。只允许修复代码围栏、引号、转义、逗号和括号等 JSON 语法；必须保持原输出的字段名、字段值、数组元素、数量和顺序不变。不得新增、删除、改写或猜测任何业务内容。若原输出不完整到无法只靠格式修复，输出 {\"__json_repair_failed__\":true}。只输出一个严格 JSON 对象。"
+    },
+    {
+      role: "user",
+      content: `原请求约束仅用于核对结构，禁止据此补写内容：\n${contract}\n\n待修复原始输出：\n${String(invalidText || "").slice(0, 24000)}`
+    }
+  ];
+}
+
+function jsonRepairPreservesSourceContent(originalText = "", repairedText = "") {
+  const original = String(originalText || "");
+  let repairedSource = String(repairedText || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const start = repairedSource.indexOf("{");
+  const end = repairedSource.lastIndexOf("}");
+  if (start >= 0 && end > start) repairedSource = repairedSource.slice(start, end + 1);
+  let repaired;
+  try {
+    repaired = JSON.parse(repairedSource);
+  } catch (_) {
+    return false;
+  }
+  const originalKeys = [...original.matchAll(/(?:["']([^"']+)["']|([A-Za-z_][\w-]*))\s*:/g)]
+    .map(match => match[1] || match[2])
+    .filter(Boolean);
+  const repairedKeys = [...repairedSource.matchAll(/"([^"\\]+)"\s*:/g)].map(match => match[1]);
+  const keyCounts = values => values.reduce((counts, value) => counts.set(value, (counts.get(value) || 0) + 1), new Map());
+  const sourceKeyCounts = keyCounts(originalKeys);
+  const repairedKeyCounts = keyCounts(repairedKeys);
+  for (const [key, count] of sourceKeyCounts) {
+    if (repairedKeyCounts.get(key) !== count) return false;
+  }
+  for (const [key, count] of repairedKeyCounts) {
+    if (sourceKeyCounts.get(key) !== count) return false;
+  }
+  const scalars = [];
+  const visit = value => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (value && typeof value === "object") return Object.values(value).forEach(visit);
+    if (value !== null && value !== undefined) scalars.push(value);
+  };
+  visit(repaired);
+  return scalars.every(value => {
+    if (typeof value === "string") {
+      const escaped = JSON.stringify(value).slice(1, -1);
+      return original.includes(value) || original.includes(escaped);
+    }
+    return original.includes(String(value));
+  });
+}
+
 function retryDelayMs(response = null) {
   const retryAfter = Number(response?.headers?.get?.("retry-after"));
   if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(1600, retryAfter * 1000);
@@ -135,6 +206,7 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
   const headers = { "Content-Type": "application/json" };
   if (authKey) headers.Authorization = "Bearer " + authKey;
   let lastError = null;
+  let jsonRepairSource = "";
   const requestTimeoutMs = effectiveLlmTimeoutMs(serverManaged, timeoutMs);
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctrl = signal ? null : new AbortController();
@@ -184,10 +256,23 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
       if (json && !jsonModelTextIsValid(content)) {
         lastError = new SyntaxError("模型返回了无法解析的 JSON");
         if (attempt === 0) {
+          // A second identical creative request tends to reproduce the same
+          // formatting drift under concurrent boards. Keep the first answer
+          // in this request scope and spend the single retry on syntax-only
+          // repair. Domain validation still owns fields, counts and meaning.
+          jsonRepairSource = content;
+          body.messages = buildJsonRepairMessages(messages, content);
+          body.temperature = 0;
           await new Promise(resolve => setTimeout(resolve, 240));
           continue;
         }
-        throw lastError;
+        throw new SyntaxError("模型 JSON 经一次格式修复后仍无法解析");
+      }
+      if (json && jsonRepairWasRejected(content)) {
+        throw new SyntaxError("模型输出不完整，无法在不补写业务内容的前提下修复 JSON");
+      }
+      if (json && jsonRepairSource && !jsonRepairPreservesSourceContent(jsonRepairSource, content)) {
+        throw new SyntaxError("模型 JSON 修复结果改写了业务内容，已拒绝继续生成");
       }
       return content;
     } catch (error) {

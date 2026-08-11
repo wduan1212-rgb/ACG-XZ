@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260811-v1423-batch-video-editor-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260811-v1424-creative-reference-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -3174,7 +3174,11 @@ ${productRelationLine(rel.slice(0, 2))}
     throw new Error(`信息流创意需要语言模型重新生成：${this.lastError}`);
   },
 
-  async generateCreativeVideoPlan({ title = "", copy = "", narration = "", account = {}, product = null, style = "", previousPrompts = [] } = {}) {
+  async generateCreativeVideoPlan({
+    title = "", copy = "", narration = "", account = {}, product = null,
+    style = "", previousPrompts = [], referenceContext = "", referenceTerms = [],
+    referenceNames = []
+  } = {}) {
     product = primaryProductForText(`${title}\n${copy}\n${narration}`, product);
     const safeTitle = cleanInfoFlowDirectorText(title, { stripTags: true });
     const safeCopy = cleanInfoFlowDirectorText(copy, { stripTags: true });
@@ -3182,6 +3186,9 @@ ${productRelationLine(rel.slice(0, 2))}
     if (!safeTitle && !safeCopy) throw new Error("生成创意视频前需要标题或发布文案");
     const productName = chineseProductDisplayName(product);
     const chosenStyle = cleanInfoFlowDirectorText(style || "电影级超写实怪诞广告", { stripTags: true });
+    const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
+    const visualTerms = normalizeReferenceTerms(referenceTerms);
+    const visualNames = [...new Set((referenceNames || []).map(name => String(name || "").trim()).filter(Boolean))].slice(0, 8);
     let lastError = null;
     let lastDraft = "";
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -3194,6 +3201,7 @@ ${productRelationLine(rel.slice(0, 2))}
         "videoPrompt 用于 Seedance 2.5：将全部故事版连成一条 30 秒视频，明确各时间段的动作、镜头运动、转场、环境声和口播；声音和画面同步生成。",
         "narration 是自然完整的中文口播。口播内容要与画面动作相辅相成，不要照念镜头说明，不要生成字幕。",
         "参考图片会由系统交给 image-2，先生成一张 16:9 横版多格素描故事板；随后系统把故事板、用户统一参考图和 videoPrompt 一同提交给 Seedance 2.5。故事板负责叙事顺序，统一参考图负责真实主体、产品与画风一致性。你不得声称已经看到未提供的图片。",
+        visualContext ? "本轮统一参考图已经由视觉模型读取。所有 storyboard 的 visual、imagePrompt 和最终 videoPrompt 都必须围绕已确认的视觉摘要设计，不能只把参考图当作后置配色。" : "",
         "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"visualStyle\":\"统一画风\",\"narration\":\"完整口播\",\"storyboard\":[{\"start\":0,\"end\":4,\"title\":\"分镜名\",\"visual\":\"画面动作\",\"imagePrompt\":\"故事版生图提示词\",\"camera\":\"景别和运镜\",\"audio\":\"对应声音或口播\",\"transition\":\"转场\"}],\"videoPrompt\":\"完整30秒视频提示词\"}"
       ].join("\n");
       const user = [
@@ -3203,6 +3211,9 @@ ${productRelationLine(rel.slice(0, 2))}
         `发布文案：${safeCopy || "未填写"}`,
         `已有口播依据：${safeNarration || safeCopy || safeTitle}`,
         `指定画风：${chosenStyle}`,
+        visualContext ? `统一参考图确认的视觉摘要：${visualContext}` : "",
+        visualTerms.length ? `必须贯穿故事版和成片的真实主体/产品锚点：${visualTerms.join("、")}` : "",
+        visualNames.length ? `已提供的真实附件名称：${visualNames.join("、")}。只把名称作为附件身份，不得据此虚构画面内容。` : "",
         lastDraft ? `上一版未通过校验，请只修复结构并保持主题相关：${lastError?.message || "结构不完整"}\n上一版：${lastDraft.slice(0, 7000)}` : ""
       ].filter(Boolean).join("\n\n");
       try {

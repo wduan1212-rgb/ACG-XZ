@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260811-v1423-batch-video-editor-1";
+import { AI } from "../api/ai.js?v=20260811-v1424-creative-reference-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260811-v1423-batch-video-editor-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260811-v1424-creative-reference-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260811-v1424-creative-reference-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
+import { deliver } from "../domain/delivery.js?v=20260811-v1424-creative-reference-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260811-v1423-batch-video-editor-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260811-v1424-creative-reference-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -549,10 +549,17 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   touch(p);
 }
 
-function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "", copyText = "", product = null, creativePlan = null, style = "" } = {}) {
+function buildBatchCreativeVideoPlan({
+  topic = "", title = "", publishCopy = "", copyText = "", product = null,
+  creativePlan = null, style = "", referenceContext = "", referenceTerms = [],
+  referenceNames = [], originalRefAssetIds = []
+} = {}) {
   const finalTitle = String(title || topic || creativePlan?.creativeAngle || "创意视频").trim();
   const narration = String(creativePlan?.narration || copyText || publishCopy || finalTitle).trim();
   const visualStyle = String(creativePlan?.visualStyle || style || "电影级超写实怪诞广告").trim();
+  const visualReference = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
+  const visualTerms = [...new Set((referenceTerms || []).map(term => String(term || "").trim()).filter(Boolean))].slice(0, 4);
+  const visualNames = [...new Set((referenceNames || []).map(name => String(name || "").trim()).filter(Boolean))].slice(0, 8);
   const storyboards = (creativePlan?.storyboards || []).map((scene, index) => ({
     ...scene,
     id: scene.id || `storyboard-${index + 1}`,
@@ -565,6 +572,9 @@ function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "",
     `把下面 ${storyboards.length} 个连续镜头绘制在同一张分镜板内，按时间顺序从左到右、从上到下排成清楚的矩形分镜格。`,
     "视觉必须是专业导演分镜稿：铅笔线稿、灰阶明暗、少量蓝色动作箭头和镜头运动标记；保持同一主体、场景空间和造型连续。不要写实成片、不要海报、不要彩色商业成图。",
     "每格只保留清晰的镜头序号和时间范围，不生成字幕、花字、宣传文案、水印、页码、logo 或二维码。",
+    visualReference ? `用户统一参考图已经由视觉模型确认：${visualReference}` : "",
+    visualTerms.length ? `故事板必须自然体现这些可确认的主体或产品锚点：${visualTerms.join("、")}。` : "",
+    visualNames.length ? `本轮真实统一参考附件：${visualNames.join("、")}。图片模型会同时收到这些附件；不要凭文件名编造附件中不存在的内容。` : "",
     ...storyboards.map((scene, index) => [
       `分镜 ${index + 1}（${Number(scene.start || 0)}-${Number(scene.end || 30)} 秒）`,
       scene.title || "",
@@ -578,6 +588,8 @@ function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "",
     `统一画风：${visualStyle}。`,
     String(creativePlan?.videoPrompt || "").trim(),
     `完整口播：${narration}`,
+    visualReference ? `统一参考图视觉锚点：${visualReference}` : "",
+    visualTerms.length ? `必须保持的真实主体或产品关键词：${visualTerms.join("、")}。` : "",
     "系统会将一张 16:9、包含全部镜头格的素描故事板作为主叙事参考，并把用户提供的统一参考图作为主体、产品或画风参考一同提交；请按分镜格顺序还原动作，同时遵守统一参考图里的真实主体特征，保持主体、场景、构图和空间连续，转场清晰但不跳轴。",
     "口播、环境声和画面动作必须同步生成；不要烧录字幕、花字、水印、页码或二维码。",
     VIDEO_NEGATIVE_PROMPT
@@ -588,6 +600,10 @@ function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "",
     copy: String(publishCopy || "").trim(),
     creativeAngle: creativePlan?.creativeAngle || finalTitle,
     visualStyle,
+    referenceContext: visualReference,
+    referenceTerms: visualTerms,
+    referenceNames: visualNames,
+    originalRefAssetIds: [...new Set((originalRefAssetIds || []).filter(Boolean))].slice(0, 8),
     narration,
     storyboards,
     storyboardSheet: {
@@ -621,8 +637,12 @@ function applyBatchCreativeVideoPlan(p, plan, { preserveCopy = false } = {}) {
     ratio: plan.ratio || A.ratio || "9:16",
     duration: Math.max(4, Math.min(30, Number(plan.duration || 30))),
     originalRefAssetIds: [...new Set([
+      ...(plan.originalRefAssetIds || []),
       ...(A.creativeVideo?.originalRefAssetIds || []),
     ].filter(Boolean))].slice(0, 8),
+    referenceContext: plan.referenceContext || A.creativeVideo?.referenceContext || "",
+    referenceTerms: plan.referenceTerms || A.creativeVideo?.referenceTerms || [],
+    referenceNames: plan.referenceNames || A.creativeVideo?.referenceNames || [],
     storyboards: (plan.storyboards || []).map(scene => ({
       ...scene,
       assetId: null,
@@ -788,7 +808,10 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
   const provider = activeProviderFor("image");
   if (!provider || provider.mock) throw new Error("image-2 图片服务当前不可用");
   const key = providerKeyFor("image", provider);
-  const originalRefIds = batchSceneRefIds(batch, acc.id);
+  const originalRefIds = [...new Set([
+    ...(creative.originalRefAssetIds || []),
+    ...batchSceneRefIds(batch, acc.id)
+  ].filter(Boolean))].slice(0, 8);
   creative.originalRefAssetIds = [...originalRefIds];
   const refs = await imageRefsForIds(originalRefIds, "storyboard-reference");
   const sheet = creative.storyboardSheet || (creative.storyboardSheet = {
@@ -797,7 +820,11 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
   if (!sheet.imagePrompt) {
     sheet.imagePrompt = buildBatchCreativeVideoPlan({
       topic: p.topic, title: p.title, publishCopy: p.artifacts?.copy?.body || "",
-      copyText: creative.narration || "", creativePlan: creative, style: creative.visualStyle || p.creativeVideoStyle || ""
+      copyText: creative.narration || "", creativePlan: creative, style: creative.visualStyle || p.creativeVideoStyle || "",
+      referenceContext: creative.referenceContext || "",
+      referenceTerms: creative.referenceTerms || [],
+      referenceNames: creative.referenceNames || [],
+      originalRefAssetIds: originalRefIds
     }).storyboardSheet.imagePrompt;
   }
   if (sheet.assetId && sheet.status === "done") return [sheet.assetId];
@@ -808,7 +835,13 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
   await persistBatchProductionCheckpoint(p);
   try {
     const request = await provider.submit({
-      prompt: sheet.imagePrompt,
+      prompt: enrichBatchImagePrompt(
+        sheet.imagePrompt,
+        refs,
+        creative.referenceContext
+          ? `统一参考图视觉锚点：${creative.referenceContext}`
+          : "统一参考图用于锁定真实主体、产品与画风；故事板每格必须保持这些要素连续。"
+      ),
       refs,
       intendedRefAssetIds: originalRefIds,
       ratio: "16:9",
@@ -819,6 +852,7 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
       idempotencyKey: operationKey
     });
     const output = await provider.poll(request.providerRef);
+    sheet.referenceReceipt = output.output?.referenceReceipt || request.referenceReceipt || null;
     if (output.status !== "succeeded" || !output.output?.dataUrl) {
       throw new Error(output.error || "素描故事板未返回结果");
     }
@@ -851,6 +885,37 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
   buildMaterialUnits(p);
   await persistBatchProductionCheckpoint(p);
   return [sheet.assetId];
+}
+
+async function prepareCreativeVideoReferenceContext(p, batch, acc, title = "") {
+  const A = p.artifacts?.boards || (p.artifacts.boards = {});
+  const refIds = batchSceneRefIds(batch, acc.id);
+  if (!refIds.length) {
+    return { brief: "", requiredTerms: [], refIds: [], refNames: [] };
+  }
+  const refs = await imageRefsForIds(refIds, "creative-video-reference");
+  if (refs.length !== refIds.length) {
+    throw new Error(`统一参考图有 ${refIds.length - refs.length} 张无法读取，已停止生成，避免故事版忽略用户素材`);
+  }
+  const signature = JSON.stringify({
+    policy: "creative-video-visual-grounding-v1",
+    title: String(title || "").trim(),
+    refs: refIds
+  });
+  if (A.creativeReferenceBrief?.signature === signature) return A.creativeReferenceBrief;
+  const result = await AI.prepareImageCopyReferenceContext({ title, refs });
+  const context = {
+    signature,
+    source: result.source || "unavailable",
+    model: result.model || "",
+    brief: String(result.brief || "").replace(/\s+/g, " ").trim().slice(0, 420),
+    requiredTerms: [...new Set((result.requiredTerms || []).map(term => String(term || "").trim()).filter(Boolean))].slice(0, 4),
+    refIds: [...refIds],
+    refNames: refs.map(ref => String(ref.name || "统一参考图").trim()).filter(Boolean).slice(0, 8),
+    at: Date.now()
+  };
+  A.creativeReferenceBrief = context;
+  return context;
 }
 
 export async function regenerateCreativeStoryboard(p, sceneIndex, prompt = "", refAssetIds = null) {
@@ -2675,7 +2740,14 @@ async function draftOne(p, batch) {
       }
       if (material) {
         let creativePlan;
+        let creativeReference;
         try {
+          creativeReference = await prepareCreativeVideoReferenceContext(
+            p,
+            batch,
+            acc,
+            p.artifacts.copy.title || customTopic
+          );
           creativePlan = await AI.generateCreativeVideoPlan({
             title: p.artifacts.copy.title || customTopic,
             copy: p.artifacts.copy.body || customVideoDraft?.copy || "",
@@ -2683,7 +2755,10 @@ async function draftOne(p, batch) {
             account: acc,
             product,
             style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
-            previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean)
+            previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean),
+            referenceContext: creativeReference.brief,
+            referenceTerms: creativeReference.requiredTerms,
+            referenceNames: creativeReference.refNames
           });
         } catch (err) {
           setStatus(p, "failed", err?.message || "创意视频故事版生成失败，请稍后重试");
@@ -2698,7 +2773,11 @@ async function draftOne(p, batch) {
           acc,
           seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
           creativePlan,
-          style: batch.creativeVideoStyle || p.creativeVideoStyle || ""
+          style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
+          referenceContext: creativeReference.brief,
+          referenceTerms: creativeReference.requiredTerms,
+          referenceNames: creativeReference.refNames,
+          originalRefAssetIds: creativeReference.refIds
         });
         applyBatchCreativeVideoPlan(p, planInfo, { preserveCopy: true });
         p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title || customVideoDraft?.title || planInfo.title || p.title;
@@ -2829,6 +2908,7 @@ async function draftOne(p, batch) {
     if (material) {
       let infoDraft;
       let creativePlan;
+      let creativeReference;
       try {
         infoDraft = await AI.generateCustomVideoDraft({
           title: topic,
@@ -2840,6 +2920,7 @@ async function draftOne(p, batch) {
         p.title = infoDraft.title || p.title || topic;
         p.artifacts.copy = { title: p.title, body: infoDraft.copy || "" };
         p.artifacts.script.generatedNarration = infoDraft.narration || "";
+        creativeReference = await prepareCreativeVideoReferenceContext(p, batch, acc, p.title);
         creativePlan = await AI.generateCreativeVideoPlan({
           title: p.title,
           copy: p.artifacts.copy.body,
@@ -2847,7 +2928,10 @@ async function draftOne(p, batch) {
           account: acc,
           product,
           style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
-          previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean)
+          previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean),
+          referenceContext: creativeReference.brief,
+          referenceTerms: creativeReference.requiredTerms,
+          referenceNames: creativeReference.refNames
         });
       } catch (err) {
         setStatus(p, "failed", err?.message || "创意视频文案或故事版生成失败，请稍后重试");
@@ -2862,7 +2946,11 @@ async function draftOne(p, batch) {
         acc,
         seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
         creativePlan,
-        style: batch.creativeVideoStyle || p.creativeVideoStyle || ""
+        style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
+        referenceContext: creativeReference.brief,
+        referenceTerms: creativeReference.requiredTerms,
+        referenceNames: creativeReference.refNames,
+        originalRefAssetIds: creativeReference.refIds
       });
       applyBatchCreativeVideoPlan(p, planInfo, { preserveCopy: true });
       p.artifacts.script.source = "llm-creative-video";

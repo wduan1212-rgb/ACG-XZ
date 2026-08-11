@@ -15,9 +15,14 @@ export function patchBoardRow(row, fresh) {
   if (oldPreview && newPreview) {
     const oldImg = oldPreview.querySelector("img");
     const newImg = newPreview.querySelector("img");
-    if (oldImg && newImg && oldImg.getAttribute("src") !== newImg.getAttribute("src")) {
+    if (!!oldImg !== !!newImg) {
+      oldPreview.replaceWith(newPreview);
+    } else if (oldImg && newImg && oldImg.getAttribute("src") !== newImg.getAttribute("src")) {
       oldImg.setAttribute("src", newImg.getAttribute("src") || "");
       oldImg.setAttribute("alt", newImg.getAttribute("alt") || "");
+    } else if (!oldImg && !newImg && oldPreview.innerHTML !== newPreview.innerHTML) {
+      oldPreview.className = newPreview.className;
+      oldPreview.innerHTML = newPreview.innerHTML;
     }
   } else if (!oldPreview && newPreview) {
     row.insertBefore(newPreview.cloneNode(true), row.firstChild);
@@ -37,6 +42,17 @@ export function patchBoardRow(row, fresh) {
   const oldTitle = row.querySelector(".mb-title");
   const newTitle = fresh.querySelector(".mb-title");
   if (oldTitle && newTitle) oldTitle.textContent = newTitle.textContent;
+  const oldMediaState = row.querySelector(".mb-media-state");
+  const newMediaState = fresh.querySelector(".mb-media-state");
+  if (oldMediaState && newMediaState) {
+    oldMediaState.className = newMediaState.className;
+    oldMediaState.textContent = newMediaState.textContent;
+  } else if (!oldMediaState && newMediaState) {
+    const dots = row.querySelector(".mb-dots");
+    if (dots) dots.before(newMediaState);
+  } else if (oldMediaState && !newMediaState) {
+    oldMediaState.remove();
+  }
 
   const oldDots = row.querySelector(".mb-dots");
   const newDots = fresh.querySelector(".mb-dots");

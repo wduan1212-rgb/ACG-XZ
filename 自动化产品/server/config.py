@@ -47,6 +47,48 @@ def _load_environment_file(path: Path) -> bool:
     return True
 
 
+def _local_git_environment_candidate(base: Path) -> Path | None:
+    """Resolve the main checkout's private env for an isolated local worktree.
+
+    Finder launchers already pass ``FALLBACK_ENV``.  Direct ``uvicorn`` runs do
+    not, which previously produced a mixed local state where static assets were
+    current but Seedance/Qianfan configuration silently disappeared.  This
+    helper only follows Git's own worktree metadata and is never used in
+    production mode.
+    """
+
+    worktree_root = base.parent
+    dot_git = worktree_root / ".git"
+    common_dir: Path | None = None
+    try:
+        if dot_git.is_dir():
+            common_dir = dot_git.resolve()
+        elif dot_git.is_file():
+            marker = dot_git.read_text("utf-8").strip()
+            if marker.lower().startswith("gitdir:"):
+                git_dir = Path(marker.split(":", 1)[1].strip()).expanduser()
+                if not git_dir.is_absolute():
+                    git_dir = (worktree_root / git_dir).resolve()
+                commondir_file = git_dir / "commondir"
+                if commondir_file.is_file():
+                    common_value = commondir_file.read_text("utf-8").strip()
+                    common_dir = (git_dir / common_value).resolve()
+                else:
+                    common_dir = git_dir.resolve()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if common_dir is None:
+        return None
+    candidate = common_dir.parent / base.name / ".env.local"
+    local_env = base / ".env.local"
+    try:
+        if candidate.resolve(strict=False) == local_env.resolve(strict=False):
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def load_environment(app_dir: Path | None = None) -> tuple[Path, ...]:
     """Load an external environment file first, then local compatibility files.
 
@@ -59,8 +101,19 @@ def load_environment(app_dir: Path | None = None) -> tuple[Path, ...]:
     external = str(os.getenv("ACG_ENV_FILE") or "").strip()
     candidates: list[Path] = []
     if external:
-        candidates.append(Path(external).expanduser())
-    candidates.extend((base / ".env.local", base / ".env"))
+        external_path = Path(external).expanduser()
+        candidates.append(external_path)
+        _load_environment_file(external_path)
+    local_path = base / ".env.local"
+    candidates.append(local_path)
+    # A checked-out local env may itself declare production mode. Load it
+    # before deciding whether Git worktree fallback is allowed.
+    _load_environment_file(local_path)
+    if runtime_mode() not in {"production", "invalid"}:
+        fallback = _local_git_environment_candidate(base)
+        if fallback is not None:
+            candidates.append(fallback)
+    candidates.append(base / ".env")
     for candidate in candidates:
         _load_environment_file(candidate)
     return tuple(_loaded_environment_files)
