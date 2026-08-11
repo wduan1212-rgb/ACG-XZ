@@ -549,7 +549,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # audit proves the exact migration/data/security closure.  The resulting
 # snapshot is O(1) on normal requests.  Only startup arms it; readiness probes
 # are observations and must never change live request admission.
-PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-4"
+PRODUCTION_WRITE_CONTRACT = "v1423-production-write-gate-5"
 _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 _PRODUCTION_WRITE_MIGRATIONS = {
     "acgMigrationVersion": 137004,
@@ -569,12 +569,54 @@ _PRODUCTION_SCHEMA_MIGRATIONS = {
 }
 
 
+def _exact_media_registry_exception_matches(checks):
+    """Allow one release-bound, identity-frozen missing-media exception."""
+
+    expected_release = str(
+        os.getenv("ACG_WRITE_GATE_MEDIA_EXCEPTION_RELEASE_ID", "") or ""
+    ).strip()
+    expected_digest = str(
+        os.getenv("ACG_WRITE_GATE_MEDIA_EXCEPTION_SHA256", "") or ""
+    ).strip().lower()
+    expected_count_text = str(
+        os.getenv("ACG_WRITE_GATE_MEDIA_EXCEPTION_UNISOLATED", "") or ""
+    ).strip()
+    if (
+        not expected_release
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        or not expected_count_text.isdigit()
+        or int(expected_count_text) <= 0
+    ):
+        return False
+    release = checks.get("release") if isinstance(checks.get("release"), dict) else {}
+    media = checks.get("mediaRegistry") if isinstance(checks.get("mediaRegistry"), dict) else {}
+    counts = media.get("counts") if isinstance(media.get("counts"), dict) else {}
+    issues = set(str(item) for item in (media.get("issues") or []))
+    allowed_issues = {
+        "missingReferencedFiles",
+        "unisolatedMissingReferencedFiles",
+    }
+    return bool(
+        str(release.get("id") or "") == expected_release
+        and hmac.compare_digest(
+            str(media.get("missingReferencedFilesSha256") or "").lower(),
+            expected_digest,
+        )
+        and int(counts.get("unisolatedMissingReferencedFiles") or 0)
+        == int(expected_count_text)
+        and int(counts.get("effectivePendingRows") or 0) == 0
+        and issues
+        and issues.issubset(allowed_issues)
+    )
+
+
 def _production_write_gate_from_checks(checks):
     """Evaluate one already-collected, read-only deployment audit."""
 
     checks = checks if isinstance(checks, dict) else {}
     database = checks.get("database") if isinstance(checks.get("database"), dict) else {}
     blockers = []
+    warnings = []
 
     if not bool(database.get("ok")):
         blockers.append("database-readiness")
@@ -607,27 +649,35 @@ def _production_write_gate_from_checks(checks):
         or int(database.get("modelUsageCompletionSpoolConflicts") or 0) != 0
         or bool(database.get("modelUsageCompletionSpoolError"))
     ):
-        blockers.append("model-usage-spool-integrity")
-    for field, blocker in (
+        warnings.append("model-usage-spool-integrity")
+    for field, warning in (
         ("modelUsageUnresolved", "model-usage-unresolved"),
         ("modelUsageOutboxPending", "model-usage-outbox-pending"),
         ("modelUsageCompletionSpoolPending", "model-usage-spool-pending"),
     ):
         if int(database.get(field) or 0) != 0:
-            blockers.append(blocker)
+            warnings.append(warning)
+    media = checks.get("mediaRegistry")
+    if not isinstance(media, dict) or not bool(media.get("ok")):
+        if _exact_media_registry_exception_matches(checks):
+            warnings.append("private-media-registry-exact-exception")
+        else:
+            blockers.append("private-media-registry-coverage")
     for key, blocker in (
-        ("mediaRegistry", "private-media-registry-coverage"),
         ("paths", "runtime-paths"),
         ("sidecar", "video-sidecar"),
-        ("usageSidecar", "video-workshop-usage-receipts"),
         ("canvas", "infinite-canvas-manifest"),
         ("release", "release-identity"),
     ):
         value = checks.get(key)
         if not isinstance(value, dict) or not bool(value.get("ok")):
             blockers.append(blocker)
+    usage_sidecar = checks.get("usageSidecar")
+    if not isinstance(usage_sidecar, dict) or not bool(usage_sidecar.get("ok")):
+        warnings.append("video-workshop-usage-receipts")
 
     blockers = list(dict.fromkeys(blockers))
+    warnings = list(dict.fromkeys(warnings))
     return {
         "ok": not blockers,
         "writeReady": not blockers,
@@ -636,6 +686,7 @@ def _production_write_gate_from_checks(checks):
         "productionReadOnlyRequired": False,
         "startupVerified": True,
         "writeEnableBlockers": blockers,
+        "writeGateWarnings": warnings,
     }
 
 
@@ -7573,6 +7624,8 @@ async def readiness(
             )
             and write_gate.get("ok")
         )
+    elif runtime_config.is_production():
+        ready = bool(write_gate.get("ok"))
     else:
         ready = all(bool(value.get("ok")) for value in checks.values())
     return JSONResponse(

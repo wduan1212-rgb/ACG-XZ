@@ -2758,8 +2758,6 @@ def database_readiness():
             and result["authSecret"]
             and team_ok
             and resource_scope_ok
-            and result["modelUsageCompletionSpoolCorrupt"] == 0
-            and result["modelUsageCompletionSpoolConflicts"] == 0
         )
     except sqlite3.Error as exc:
         result["error"] = type(exc).__name__
@@ -2772,19 +2770,15 @@ def read_only_database_operational(database):
     """Return whether an existing database is safe for pure read traffic.
 
     Production maintenance mode must stay useful when a write-release gate is
-    closed by pending migrations, media coverage, or unresolved usage.  Those
-    conditions still block every mutation, but they must not turn login and
-    ordinary reads into 500 responses.  Corrupt SQLite or completion-spool
-    evidence remains fail-closed because even read traffic cannot be trusted.
+    closed by pending migrations or media coverage. Model-usage telemetry is
+    observational and must not turn login and ordinary reads into 500 responses;
+    only the SQLite file and its own integrity remain authoritative here.
     """
 
     database = database if isinstance(database, dict) else {}
     return bool(
         database.get("exists")
         and str(database.get("quickCheck") or "") == "ok"
-        and int(database.get("modelUsageCompletionSpoolCorrupt") or 0) == 0
-        and int(database.get("modelUsageCompletionSpoolConflicts") or 0) == 0
-        and not database.get("modelUsageCompletionSpoolError")
     )
 
 
@@ -6718,8 +6712,12 @@ def private_media_registry_status():
     conn = _connect(read_only=True)
     try:
         conn.execute("BEGIN")
-        plan = _private_media_plan_locked(conn)
+        plan = _private_media_plan_locked(conn, include_issue_identities=True)
         conn.rollback()
+        issue_identities = plan.pop("_issueIdentities", {})
+        plan["missingReferencedFilesSha256"] = _canonical_json_sha256(
+            issue_identities.get("missingReferencedFiles") or []
+        )
         return {key: value for key, value in plan.items() if key != "rows"}
     finally:
         conn.close()

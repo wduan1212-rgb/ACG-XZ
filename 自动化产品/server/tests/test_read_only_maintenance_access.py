@@ -106,15 +106,18 @@ class ReadOnlyMaintenanceAccessTests(unittest.TestCase):
         for field, value in (
             ("exists", False),
             ("quickCheck", "corrupt"),
-            ("modelUsageCompletionSpoolCorrupt", 1),
-            ("modelUsageCompletionSpoolConflicts", 1),
-            ("modelUsageCompletionSpoolError", "unreadable"),
         ):
             with self.subTest(field=field):
                 self.assertFalse(store.read_only_database_operational({
                     **healthy_for_reads,
                     field: value,
                 }))
+        self.assertTrue(store.read_only_database_operational({
+            **healthy_for_reads,
+            "modelUsageCompletionSpoolCorrupt": 1,
+            "modelUsageCompletionSpoolConflicts": 1,
+            "modelUsageCompletionSpoolError": "unreadable",
+        }))
 
 
 if __name__ == "__main__":

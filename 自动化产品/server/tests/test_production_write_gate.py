@@ -219,17 +219,13 @@ uvicorn.run(
         self.assertTrue(gate["ok"])
         self.assertTrue(gate["writeReady"])
         self.assertEqual([], gate["writeEnableBlockers"])
-        self.assertEqual("v140-production-write-gate-4", gate["contract"])
+        self.assertEqual("v1423-production-write-gate-5", gate["contract"])
 
     def test_every_security_layer_is_authoritative(self):
         cases = (
             ("acgMigration", False, "acg-team-migration-137004"),
             ("resourceScopeMigration", False, "resource-scope-migration-140002"),
             ("privateMediaMigration", False, "private-media-migration-140004"),
-            ("modelUsageCompletionSpoolCorrupt", 1, "model-usage-spool-integrity"),
-            ("modelUsageUnresolved", 1, "model-usage-unresolved"),
-            ("modelUsageOutboxPending", 1, "model-usage-outbox-pending"),
-            ("modelUsageCompletionSpoolPending", 1, "model-usage-spool-pending"),
         )
         mode, production, read_only, mode_status = self.production_mode()
         with mode, production, read_only, mode_status:
@@ -245,7 +241,6 @@ uvicorn.run(
                 ("mediaRegistry", "private-media-registry-coverage"),
                 ("paths", "runtime-paths"),
                 ("sidecar", "video-sidecar"),
-                ("usageSidecar", "video-workshop-usage-receipts"),
                 ("canvas", "infinite-canvas-manifest"),
                 ("release", "release-identity"),
             ):
@@ -255,6 +250,82 @@ uvicorn.run(
                     gate = server_main._production_write_contract_readiness(checks)
                     self.assertFalse(gate["ok"])
                     self.assertIn(blocker, gate["writeEnableBlockers"])
+
+    def test_usage_audits_are_visible_warnings_but_never_block_rw(self):
+        checks = healthy_checks()
+        checks["database"].update({
+            "modelUsageCompletionSpoolCorrupt": 1,
+            "modelUsageCompletionSpoolConflicts": 1,
+            "modelUsageUnresolved": 8,
+            "modelUsageOutboxPending": 3,
+            "modelUsageCompletionSpoolPending": 2,
+        })
+        checks["usageSidecar"] = {"ok": False, "unresolved": 4}
+        mode, production, read_only, mode_status = self.production_mode()
+        with mode, production, read_only, mode_status:
+            gate = server_main._production_write_contract_readiness(checks)
+        self.assertTrue(gate["ok"])
+        self.assertTrue(gate["writeReady"])
+        self.assertEqual([], gate["writeEnableBlockers"])
+        self.assertEqual(
+            {
+                "model-usage-spool-integrity",
+                "model-usage-unresolved",
+                "model-usage-outbox-pending",
+                "model-usage-spool-pending",
+                "video-workshop-usage-receipts",
+            },
+            set(gate["writeGateWarnings"]),
+        )
+
+    def test_missing_media_exception_is_release_and_identity_bound(self):
+        digest = "a" * 64
+        checks = healthy_checks()
+        checks["mediaRegistry"] = {
+            "ok": False,
+            "issues": [
+                "missingReferencedFiles",
+                "unisolatedMissingReferencedFiles",
+            ],
+            "missingReferencedFilesSha256": digest,
+            "counts": {
+                "unisolatedMissingReferencedFiles": 1,
+                "effectivePendingRows": 0,
+            },
+        }
+        exception = {
+            "ACG_WRITE_GATE_MEDIA_EXCEPTION_RELEASE_ID": "v140-test",
+            "ACG_WRITE_GATE_MEDIA_EXCEPTION_SHA256": digest,
+            "ACG_WRITE_GATE_MEDIA_EXCEPTION_UNISOLATED": "1",
+        }
+        mode, production, read_only, mode_status = self.production_mode()
+        with mode, production, read_only, mode_status, patch.dict(
+            os.environ, exception, clear=False,
+        ):
+            gate = server_main._production_write_contract_readiness(checks)
+        self.assertTrue(gate["ok"])
+        self.assertIn(
+            "private-media-registry-exact-exception",
+            gate["writeGateWarnings"],
+        )
+
+        for mutation in (
+            {"missingReferencedFilesSha256": "b" * 64},
+            {"counts": {"unisolatedMissingReferencedFiles": 2, "effectivePendingRows": 0}},
+            {"issues": ["registryConflicts"]},
+        ):
+            with self.subTest(mutation=mutation):
+                drifted = {**checks, "mediaRegistry": {**checks["mediaRegistry"], **mutation}}
+                mode, production, read_only, mode_status = self.production_mode()
+                with mode, production, read_only, mode_status, patch.dict(
+                    os.environ, exception, clear=False,
+                ):
+                    rejected = server_main._production_write_contract_readiness(drifted)
+                self.assertFalse(rejected["ok"])
+                self.assertIn(
+                    "private-media-registry-coverage",
+                    rejected["writeEnableBlockers"],
+                )
 
     def test_sidecar_mode_must_match_main_mode_in_both_directions(self):
         payload = {

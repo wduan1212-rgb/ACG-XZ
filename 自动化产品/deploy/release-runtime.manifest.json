@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260811-v1423-batch-video-editor-1",
   "fileCount": 65,
-  "totalBytes": 3311650,
+  "totalBytes": 3313622,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 551800,
-      "sha256": "1da5b7dd683dfee42b10a52c3a92c764f15089656998ab4fcda044dce74b3b15"
+      "size": 553957,
+      "sha256": "215b719119a9d365cc8946579873579763c070ea2adf13eafa29d8ac5b653b88"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -321,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 917177,
-      "sha256": "8119f0c4237d954016866bb289d32e88b5734df751aed76a80db12380c3cdb89"
+      "size": 916992,
+      "sha256": "eea3f2e3f15b489f85c7176b7e8f2d9159b32a1c88e1ce00816ae8f355cb31de"
     },
     {
       "path": "tools/verify_release_contracts.py",

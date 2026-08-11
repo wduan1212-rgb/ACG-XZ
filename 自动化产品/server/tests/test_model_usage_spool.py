@@ -524,7 +524,8 @@ class ModelUsageLatencyAndSpoolTest(unittest.TestCase):
             )
         self.assertEqual(1, store.model_usage_completion_spool_status()["pending"])
 
-    def test_corrupt_spool_is_reported_preserved_and_fails_readiness_integrity(self):
+    def test_corrupt_spool_is_reported_preserved_without_blocking_readiness(self):
+        baseline_ready = store.database_readiness()["ok"]
         receipt = self.begin("canvas:agent:spool-corrupt")
         store.spool_model_usage_completion(
             receipt["receiptId"],
@@ -551,7 +552,7 @@ class ModelUsageLatencyAndSpoolTest(unittest.TestCase):
         readiness = store.database_readiness()
         self.assertEqual(1, readiness["modelUsageCompletionSpoolPending"])
         self.assertEqual(1, readiness["modelUsageCompletionSpoolCorrupt"])
-        self.assertFalse(readiness["ok"])
+        self.assertEqual(baseline_ready, readiness["ok"])
 
     def test_receipt_connection_timeout_isolated_from_ordinary_store_connection(self):
         ordinary = store._connect(read_only=False)
