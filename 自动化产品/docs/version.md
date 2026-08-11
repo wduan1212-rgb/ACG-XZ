@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v142.3 - 2026-08-11（本地候选：统一视频号、image-2 故事版与 Seedance 2.5 创意视频）
+## v142.3 - 2026-08-11（生产：统一视频号、image-2 故事版与 Seedance 2.5 创意视频）
+
+### 生产部署闭环
+
+- 生产流量运行功能 SHA `ec0a4daf86502f5cbf5a03806c202942661f5d29`，release/cache `20260811-v1423-batch-video-editor-1`，实际 sibling release 为 `20260811-v1423-batch-video-editor-1-ec0a4daf`。切换使用持久绿色主服务/sidecar 和精确路由，旧 v141.3 主服务/sidecar 始终 active/RW，构建、验证、回切和再切换期间没有停止服务器或进入只读。停止路由单元即可只撤销两条精确规则并回到仍在线的旧服务，不替换 SQLite 或业务数据。
+- 生产启动后曾发现绿色进程的 release 外环境只包含本版新增的搜索/创意视频变量，没有继承原生产 LLM、图片、TTS、数字人等 31 个 provider 配置项。流量先即时回到旧服务，再把原生产外部配置中缺失的键原值合并到新外部 env，权限保持 `0600`；绿色主服务/sidecar 在无流量状态重启并通过 health/readiness 后再恢复路由。密钥值没有进入 Git、release、日志或文档。最终主服务报告 LLM 已配置，图片配置接口正常，真实图片生成连续两次 HTTP 200。
+- 目标 Linux 验证：锁定主服务收集 `807`，`806 passed + 1` 个获准旧快照 skip；视频 sidecar `160/160`，Node `129/129`，三套 wheelhouse 的离线安装、exact-installed 与 `pip check` 通过。最终 release verifier Phase 0 为 `862a4553802914ca817541183d54f50ac45c3eb5bc0a8525bb26eadd4b84cabd`，runtime `65` files / `3,313,747` bytes / `b4d5fb1641ec27651fe067fa255a83eaf5afc31d618e7f50d917eb0b1ae71cb5`。
+- 切换前一致 SQLite 备份为 `v1423-pre-switch-ec0a4daf-20260811T004158Z.sqlite`，SHA-256 `7a91ef6ed1de47209630d1270ffd0d9e8ebcf0a573e94a90068f0cdba2154782`；独立 restore drill 的摘要一致且 `quick_check=ok`。部署前后均为 48 表，行数随正常生产从 `64,195` 增至 `64,237`，逐表无减少；uploads `6,718→6,720`，composed `1,005`、canvas blobs `638`、视频 projects/uploads/outputs `60/203/1,872` 无减少。
+- 生产 readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok`，sidecar 为 `readOnly=false / writePolicy=normal`。模型用量未决只保留可观察 warning，永久不再阻断启动、读写或切换；供应商曝光量/观看量及其业务权限没有放宽或改写。历史媒体仍保留 raw 缺失事实，本次新增的一条精确 registry 缺失通过 release 与证据摘要绑定的例外保持可见，不删除引用、不伪造文件、不冒充恢复。
+- 公网根页面、health、OpenAPI 与真实浏览器均加载本版 cache；首页、社区真实媒体、历史媒体保留提示和游客鉴权边界正常。百度千帆服务器私密烟测返回 HTTP 200；部署过程中没有重复提交 Seedance 付费任务。用户实测暴露出“前一任务板未结束时新建第二任务板，图卡提示词模型返回非严格 JSON”的代码稳定性问题；现场图片服务随后连续成功，故该问题已交本地代码线程修复，不能误判为图片 provider 故障。
 
 ### 本版范围
 
@@ -17,7 +26,7 @@
 - “账号数据”里的“开始新创作”不再打开旧单号制作工作台，而是创建一个只预选当前账号的批量任务计划；图文账号默认图文，视频号默认创意视频，用户仍可在任务板切换数字人。旧单号任务的继续、审核、发布和历史媒体保持原路由，不改数据模型。
 - 数字人和创意视频的详情统一收敛为“1 生成 / 2 审核”两个可见节点；生成节点展示真实成片预览和“进入剪辑台”，创意视频额外显示 30 秒规格与单张多格故事板。故事板“微调”可查看、编辑整张提示词和本任务参考图，并只在用户明确确认后重生成该张。剪辑入口把批量成片以 owner-scoped、幂等、只读媒体桥接方式打开到视频工坊既有剪辑台，继续使用画中画、主轨替换、字幕、口播/BGM/音效、转场和外部素材拖入能力；桥接本身不调用 provider、不复制业务数据库，也不改写原始成片。
 - 图片上游的连接超时、响应丢失和 `502/503/504` 未知结果不再把创意故事版或整条 production 直接写成终态失败。服务端返回结构化 `IMAGE_PROVIDER_RESULT_UNKNOWN` 与稳定 operation key，浏览器先查询耐久回执；未证实失败时显示“结果确认中”并保留全部已完成故事版，禁止自动盲重提。只有用户在故事版微调中明确重新生成才创建新 revision 操作键。
-- release/cache identity 为 `20260811-v1423-batch-video-editor-1`。本版不新增 SQLite schema、数据迁移、持久目录、Python/Node 依赖或 Nginx/systemd 配置；生产仍为 v141.3 / `1332f8c8e9408c7e9a36f49ab13b48a46ca353f5` / `20260810-v1413-runtime-finalization-1`，本记录随唯一功能提交推送后交由服务器部署线程验签，尚未部署。
+- release/cache identity 为 `20260811-v1423-batch-video-editor-1`。本版不新增 SQLite schema、数据迁移、持久业务目录、Python/Node 依赖或 Nginx 变化；生产已按上面的绿色服务和精确路由边界部署功能 SHA `ec0a4daf86502f5cbf5a03806c202942661f5d29`，旧 v141.3 服务继续作为在线代码回滚点保留。
 
 ### 快速验证边界
 

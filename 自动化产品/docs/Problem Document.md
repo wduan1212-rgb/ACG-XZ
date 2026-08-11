@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-11 v142.3 生产闭环：绿色 release 不能用新 env 覆盖既有 provider 配置来源
+
+- **现象**：新 release 的 root、health 和 readiness 都可访问，Qianfan/Seedance 2.5 也已配置，但用户进入批量图文后先看到“服务器未配置文案模型”，随后旧页面又报告“图片生成服务未配置”。数据库、静态页面和服务进程都正常，表面上像多个 provider 同时故障。
+- **根因**：绿色 systemd 单元把 `ACG_ENV_FILE` 指向本版新建的 release 外 env。该文件只保存持久路径、readiness、Qianfan、Seedance 2.5 和精确媒体例外，没有继承原生产 `.env.local` 中的 LLM、图片、TTS、数字人和普通视频配置。启动脚本使用“进程已有变量优先”，所以不会再从另一个 env 自动补齐；health 只证明进程存活，不能证明全部业务 provider 完整。
+- **修复**：先停止两条精确绿色路由，使流量立即回到始终 active/RW 的旧服务；不停止服务器、不切只读。随后只按键把原外部 env 中缺失的 31 个 provider 配置原值合并到新 release 外 env，保留 `0600`，绿色主服务/sidecar 在无流量状态重启。确认 LLM 已配置、image/TTS/video config 为 200、protected readiness 全绿后才重新启用路由；整个过程没有触碰 SQLite、账号或媒体，密钥值没有进入日志、Git、release 或文档。
+- **防回归**：绿色发布的环境审计必须比较旧/新 env 的非空键集合，并按功能分组验证 LLM、image、TTS、digital-human、video、Qianfan；不得只验本版新增 key。路由前必须在绿色端口完成 authenticated provider-config 读取和最小必要真实链路，旧服务保持在线到验收结束。新 env 可继承旧 provider 值再用本版值覆盖，但不能把旧 env 当代码同步对象或在输出中打印值。
+
 ## 2026-08-11 v142.3 已闭环：模型列表可见不等于 Seedance 2.5 真实可生成
 
 - **现象**：方舟 `/api/v3/models` 返回 HTTP 200 并列出 `doubao-seedance-2-5-260628`，但用同一账号发起真实付费生成提交时返回 HTTP 404 `ModelNotOpen`。
