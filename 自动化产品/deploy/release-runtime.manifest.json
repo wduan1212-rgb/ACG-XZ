@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260812-v1427-generation-startup-sync-1",
   "fileCount": 65,
-  "totalBytes": 3327971,
+  "totalBytes": 3325636,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 561561,
-      "sha256": "938d4ce761d5040f1f2ebd70e7cc9b52a1e3dcf4a6f66e98b43cdc53ad70f364"
+      "size": 559226,
+      "sha256": "d7b159097810c029a7c4ec84ea31a04c62a7b9ae6b7f6e1bea88a16398225713"
     },
     {
       "path": "server/migrations/__init__.py",
