@@ -114,6 +114,30 @@ class ImageMaasRoutingTest(unittest.TestCase):
             center = normalized.getpixel((normalized.size[0] // 2, normalized.size[1] // 2))
             self.assertLess(sum(abs(center[i] - value) for i, value in enumerate((17, 91, 173))), 18)
 
+    def test_multiple_maas_references_are_packed_into_one_transport_sheet(self):
+        if main.Image is None:
+            self.skipTest("Pillow is required for multi-reference transport")
+        refs = []
+        colors = [(220, 30, 30), (30, 180, 30), (30, 30, 220), (180, 90, 20)]
+        for index, color in enumerate(colors):
+            image = main.Image.new("RGB", (320 + index * 40, 120 + index * 30), color)
+            source = io.BytesIO()
+            image.save(source, format="PNG")
+            refs.append((f"reference-{index}.png", source.getvalue(), "image/png"))
+
+        transport, logical_count = main._compose_maas_reference_sheet(refs)
+
+        self.assertEqual(logical_count, 4)
+        self.assertEqual(len(transport), 1)
+        self.assertEqual(transport[0][2], "image/jpeg")
+        self.assertLessEqual(
+            main._image_ref_data_url_size(transport[0][1], transport[0][2]),
+            main.IMAGE_REFERENCE_MAX_DATA_URL_BYTES,
+        )
+        with main.Image.open(io.BytesIO(transport[0][1])) as sheet:
+            self.assertEqual(sheet.size, (2048, 2048))
+            self.assertLessEqual(max(sheet.size) / min(sheet.size), 3.0)
+
     def test_canvas_timeout_error_is_readable_and_does_not_expose_provider_url(self):
         error = main.HTTPException(
             502,

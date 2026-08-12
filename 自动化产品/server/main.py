@@ -181,6 +181,9 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3)
 IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)
 IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
+IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS = _positive_env_int(
+    "IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS", 270
+)
 VIDEO_SUBMIT_CONCURRENCY = _positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10)
 _IMAGE_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
 _VIDEO_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
@@ -1979,6 +1982,58 @@ def _compact_image_ref_files(ref_files: List[Tuple[str, bytes, str]]) -> Tuple[L
     if total_size > IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES:
         raise HTTPException(413, "参考图总大小超过图片模型请求上限；请减少参考图数量后重试")
     return compacted, changed
+
+
+def _compose_maas_reference_sheet(
+    ref_files: List[Tuple[str, bytes, str]],
+) -> Tuple[List[Tuple[str, bytes, str]], int]:
+    """Pack multiple logical references into one lossless-layout transport image.
+
+    The production MaaS image-edit endpoint accepts a single reference image
+    reliably and rejects some otherwise valid multi-image arrays with a generic
+    parameter error. Preserve every source without crop or stretch in a white
+    grid and report the original logical reference count to the caller. This is
+    an in-memory provider transport only; stored assets and canvas blobs are
+    untouched.
+    """
+    active = list(ref_files[:8])
+    if len(active) <= 1:
+        return active, len(active)
+    if Image is None:
+        raise HTTPException(500, "服务器缺少多参考图安全组版能力，请联系管理员")
+    columns = 2 if len(active) <= 4 else 3
+    rows = int(math.ceil(len(active) / columns))
+    canvas_edge = 2048
+    gap = 24
+    cell_width = (canvas_edge - gap * (columns + 1)) // columns
+    cell_height = (canvas_edge - gap * (rows + 1)) // rows
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    sheet = Image.new("RGB", (canvas_edge, canvas_edge), "white")
+    for index, (_name, blob, _mime) in enumerate(active):
+        try:
+            with Image.open(io.BytesIO(blob)) as opened:
+                opened = ImageOps.exif_transpose(opened) if ImageOps else opened
+                source = opened.convert("RGBA")
+                scale = min(cell_width / source.width, cell_height / source.height, 1.0)
+                target = (
+                    max(1, int(round(source.width * scale))),
+                    max(1, int(round(source.height * scale))),
+                )
+                fitted = source.resize(target, resampling) if target != source.size else source
+                column, row = index % columns, index // columns
+                x = gap + column * (cell_width + gap) + (cell_width - target[0]) // 2
+                y = gap + row * (cell_height + gap) + (cell_height - target[1]) // 2
+                sheet.paste(fitted, (x, y), fitted.getchannel("A"))
+        except Exception as exc:
+            raise HTTPException(400, "参考图无法安全组版：%s" % exc.__class__.__name__)
+    output = io.BytesIO()
+    sheet.save(output, format="JPEG", quality=88, optimize=True, progressive=True)
+    blob, mime, _changed = _compact_image_reference(
+        output.getvalue(),
+        "image/jpeg",
+        IMAGE_REFERENCE_MAX_DATA_URL_BYTES,
+    )
+    return [("reference-sheet.jpg", blob, mime)], len(active)
 
 
 def _normalize_small_image_reference(
@@ -3792,12 +3847,13 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None, *, attempt_le
     request_endpoint = endpoint
     attempt_kwargs = {"attempt_ledger": attempt_ledger} if attempt_ledger is not None else {}
     try:
-        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(float(IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS), connect=12.0), trust_env=False, follow_redirects=True)) as client:
             ref_files = await _collect_image_ref_files(client, req.refs or [])
             ref_files, compacted_refs = _compact_image_ref_files(ref_files)
             skipped_refs = max(0, len(req.refs or []) - len(ref_files))
             if maas_mode:
-                used_refs = min(len(ref_files), 8)
+                maas_ref_files, logical_ref_count = _compose_maas_reference_sheet(ref_files)
+                used_refs = logical_ref_count
                 maas_prompt = prompt
                 if used_refs and not req.exactPrompt:
                     maas_prompt += "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
@@ -3806,10 +3862,10 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None, *, attempt_le
                     maas_prompt,
                     maas_model,
                     ratio,
-                    ref_files,
+                    maas_ref_files,
                     size=req.size,
                 )
-                request_endpoint = _maas_endpoint_for_refs(endpoint, bool(ref_files))
+                request_endpoint = _maas_endpoint_for_refs(endpoint, bool(maas_ref_files))
                 r, data = await _post_json_with_retry(
                     client, request_endpoint, maas_body, json_headers,
                     **attempt_kwargs,
