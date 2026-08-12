@@ -2003,8 +2003,11 @@ def _compose_maas_reference_sheet(
         raise HTTPException(500, "服务器缺少多参考图安全组版能力，请联系管理员")
     columns = 2 if len(active) <= 4 else 3
     rows = int(math.ceil(len(active) / columns))
-    canvas_edge = 2048
-    gap = 24
+    # Match the provider's proven single-reference transport profile. The
+    # endpoint rejects progressive 2048 JPEG sheets even though their byte
+    # size is small, while ordinary near-1024 PNG references enter generation.
+    canvas_edge = 1024
+    gap = 16
     cell_width = (canvas_edge - gap * (columns + 1)) // columns
     cell_height = (canvas_edge - gap * (rows + 1)) // rows
     resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
@@ -2027,13 +2030,14 @@ def _compose_maas_reference_sheet(
         except Exception as exc:
             raise HTTPException(400, "参考图无法安全组版：%s" % exc.__class__.__name__)
     output = io.BytesIO()
-    sheet.save(output, format="JPEG", quality=88, optimize=True, progressive=True)
+    sheet.save(output, format="PNG", optimize=True)
     blob, mime, _changed = _compact_image_reference(
         output.getvalue(),
-        "image/jpeg",
+        "image/png",
         IMAGE_REFERENCE_MAX_DATA_URL_BYTES,
     )
-    return [("reference-sheet.jpg", blob, mime)], len(active)
+    suffix = "jpg" if mime == "image/jpeg" else "png"
+    return [(f"reference-sheet.{suffix}", blob, mime)], len(active)
 
 
 def _normalize_small_image_reference(
