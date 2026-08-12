@@ -90,6 +90,30 @@ class ImageMaasRoutingTest(unittest.TestCase):
                 delta=0.02,
             )
 
+    def test_overwide_reference_is_padded_with_transport_margin_without_crop(self):
+        if main.Image is None:
+            self.skipTest("Pillow is required for narrow-reference normalization")
+        image = main.Image.new("RGB", (1280, 273), (17, 91, 173))
+        source = io.BytesIO()
+        image.save(source, format="WEBP", lossless=True)
+
+        blob, mime, changed = main._normalize_small_image_reference(
+            source.getvalue(),
+            "image/webp",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(mime, "image/jpeg")
+        with main.Image.open(io.BytesIO(blob)) as normalized:
+            self.assertLessEqual(
+                max(normalized.size) / min(normalized.size),
+                3.0,
+            )
+            self.assertEqual(normalized.size[0], 1280)
+            self.assertGreater(normalized.size[1], 273)
+            center = normalized.getpixel((normalized.size[0] // 2, normalized.size[1] // 2))
+            self.assertLess(sum(abs(center[i] - value) for i, value in enumerate((17, 91, 173))), 18)
+
     def test_canvas_timeout_error_is_readable_and_does_not_expose_provider_url(self):
         error = main.HTTPException(
             502,

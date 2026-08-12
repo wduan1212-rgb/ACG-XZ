@@ -1986,32 +1986,45 @@ def _normalize_small_image_reference(
     mime: str,
     *,
     minimum_short_side: int = 256,
+    maximum_aspect_ratio: float = 3.0,
 ) -> Tuple[bytes, str, bool]:
-    """Upscale tiny logos before MaaS validation without changing their aspect.
+    """Prepare narrow/tiny references for MaaS without changing source pixels.
 
     TokenHub accepts ordinary screenshots but rejects very small logo strips as
-    invalid request parameters.  Padding would invent a composition, so keep
-    the original aspect ratio and only raise the transport resolution.  The
-    reference remains an input; this never changes a user's stored source file.
+    invalid request parameters. It also applies the same 3:1 input-canvas
+    boundary as generated canvases. Upscale a tiny source first, then add only
+    the minimum white transport margin required for an over-wide/over-tall
+    source. No pixel is cropped or stretched, and the user's stored file is
+    never modified.
     """
     if not Image or not blob:
         return blob, mime, False
     try:
         with Image.open(io.BytesIO(blob)) as opened:
+            opened = ImageOps.exif_transpose(opened) if ImageOps else opened
             width, height = opened.size
             shortest = min(width, height)
-            if shortest >= minimum_short_side:
+            needs_scale = shortest < minimum_short_side
+            needs_margin = max(width, height) / max(1, shortest) > maximum_aspect_ratio
+            if not needs_scale and not needs_margin:
                 return blob, mime, False
-            scale = minimum_short_side / max(1, shortest)
-            target = (
-                max(minimum_short_side, int(round(width * scale))),
-                max(minimum_short_side, int(round(height * scale))),
+            scale = minimum_short_side / max(1, shortest) if needs_scale else 1.0
+            scaled = (
+                max(1, int(round(width * scale))),
+                max(1, int(round(height * scale))),
             )
             resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
             source = opened.convert("RGBA")
-            resized = source.resize(target, resampling)
+            resized = source.resize(scaled, resampling) if scaled != source.size else source
+            target_width, target_height = scaled
+            if target_width / max(1, target_height) > maximum_aspect_ratio:
+                target_height = int(math.ceil(target_width / maximum_aspect_ratio))
+            elif target_height / max(1, target_width) > maximum_aspect_ratio:
+                target_width = int(math.ceil(target_height / maximum_aspect_ratio))
+            target = (target_width, target_height)
             background = Image.new("RGB", target, "white")
-            background.paste(resized, mask=resized.getchannel("A"))
+            offset = ((target_width - scaled[0]) // 2, (target_height - scaled[1]) // 2)
+            background.paste(resized, offset, resized.getchannel("A"))
         output = io.BytesIO()
         background.save(output, format="JPEG", quality=90, optimize=True)
         return output.getvalue(), "image/jpeg", True
