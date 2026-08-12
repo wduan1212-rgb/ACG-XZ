@@ -1,13 +1,22 @@
 # 星阵版本记录
 
-## v142.6 - 2026-08-12（本地候选：供应商头像与批量文案发布边界）
+## v142.6 - 2026-08-12（生产：供应商头像与批量文案发布边界）
+
+### 生产部署闭环
+
+- 生产流量现运行功能 SHA `f2c35ed1457e635331ce56042cf40b8ef4f78371`，分支 `codex/v141-content-governance`，release/cache `20260812-v1426-supplier-avatar-copy-limit-1`，实际 sibling release 为 `20260812-v1426-supplier-avatar-copy-limit-1-f2c35ed1`。v142.6 主服务/sidecar 在私有端口 `8793/8769` 完成全部验证后，以两条置于 v142.5 规则之前的精确路由原子接流；v142.5 主服务、sidecar 和路由始终 active/RW，发布全程没有停服、只读或 502 窗口，撤销 v142.6 路由即可回到仍在线的 v142.5，且不回灌旧数据库。
+- 只同步验签 Git archive 中的代码和静态文件。生产外部 env 由 v142.5 服务器文件原值复制，权限保持 `0600`，仅替换 release 身份、代码根和无流量端口；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 projects/uploads/outputs、Nginx 和 provider 密钥均未上传、覆盖或写入 Git/release/日志。运行依赖锁与 v142.5 完全一致，目标 Linux 的主服务 18 包、sidecar 37 包 exact-installed 与 `pip check` 均通过。
+- 目标 Ubuntu x86_64 完整验证为锁定主服务 `820 collected / 819 passed / 1 approved skip`、sidecar `160/160`、Node `129/129`。release verifier 与本地候选逐字一致：Phase 0 `700a304cd0b2277bffdd8613be02ddc2b33d048c0a77d38700136c59ec1d57b4`，ESM graph `cccb6260628b003b3189d05dd3b40632aede87e095179861be4ee75735d5e597`、closure `ca9c31f6e0fa5a5d48f412e6c8940b9f8d401669231e3a4ed365adec15b559e3`，canvas `63 files / 1,768,749 bytes / 1cec16f2cd3fede5021d521cd8d0abcc3f46d9d2409c8f3dad5f63b8d6189d75`，runtime `65 files / 3,322,592 bytes / c935ce1784fda6e1166efca02dbd6f1070ad377df71616060332395591a549fc`。
+- 切流前在线 SQLite v2 保护点为 `/data/dumate-studio/backups/v1426-pre-f2c35ed1-20260812T054035Z`，manifest SHA-256 `0b65fbbd3874c50930c954dbe88973e1bb059da616b45722bd6b16fbff98b906`，数据库 SHA-256 `a162639be23e6b90751b17d2b408dfbab00f9eab2dba1f2ddd7ec6eb4b4fbb7f`；独立 verify、逐字节 restore drill 和恢复库 `quick_check=ok` 通过。旧 v142.5 单元、路由脚本和私密环境的回滚副本保存在 `/data/dumate-studio/deployment-backups/v1426-pre-f2c35ed1-20260812T054035Z`，其 `SHA256SUMS` 已验证。
+- 无流量验收中，主服务与 sidecar 均 active/RW、`NRestarts=0`，protected readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`。creator-auth 的 LLM、图片、TTS、视频、OmniHuman 和无限画布配置均返回 200 且配置/可达；最小真实文案、图片、TTS、百度搜索 AI 选题均返回 HTTP 200，图片为有效 image data URL，搜索返回 10 条资料和 1 条正文加标签共 `465` 字的合规预览。供应商生产快照读取为 200，既有内容账号头像在携带精确 `accountId` 后返回 200 的有效 PNG；省略账号上下文仍按预期拒绝。
+- 公网切流后 health 连续 `10/10` 为 200，root、OpenAPI、community、无限画布和视频工坊入口均 200，匿名 `/api/auth/me` 为 401，页面加载精确 v142.6 cache；真实用户的账号状态、发布配额和交付指标请求持续 200。切流后主服务 HTTP 5xx 与 Traceback 均为 0。SQLite 保持 48 表，行数因 4 次受控模型烟测与正常请求从 `66,982→67,000`，关键业务表无减少，`model_usage_receipts 5,543→5,547` 对应上述四次烟测；六类媒体文件数与字节完全不变。历史 raw missing `47`、pending `48`、isolated `46`、unisolated `1`、effective pending `0` 继续可见，模型/sidecar 用量仍是 warning-only，不会让正常生产停服或转只读。
 
 ### 本版范围
 
 - 修复供应商母账号替换内容账号头像时报“私有媒体归属登记失败”，以及供应商账号看板中既有内容账号头像批量破图。供应商身份的权威团队映射存放在 `team_suppliers`，媒体登记现在与资源作用域使用同一团队事实；母账号可维护并读取本团队全部内容账号头像，子账号只读取已分配账号头像。读取必须逐次精确匹配 `账号 → avatarAssetId → 资产 → 文件`，未放宽为团队媒体库通读、跨团队读取、覆盖或通用资产写入。
 - 标题驱动的批量图文正文同时在模型提示和本地收口层限定：正文与最终 4–7 个话题标签合计不超过 `1000` 个 Unicode 字符。本地收口会先保留标签预算，再截断超长正文，因此模型偶发超限也不会把不可发布文案推进后续图卡与发布阶段。
 - 复核现有账号每日配额契约：只统计 `assets` 中 `delivered=true` 且带权威发布日的成功交付；草稿、起草、图片生成和未发布 production 均不占配额。本版不重写历史配额或业务数据，只保留并复跑“创作不计数、成功发布才计数”的服务端回归。
-- release/cache identity 为 `20260812-v1426-supplier-avatar-copy-limit-1`。本版不新增 schema、迁移、依赖、持久目录、Nginx 或 systemd 变化；当前生产仍为 v142.5，本候选尚未部署，也未连接或修改生产 SQLite、账号、媒体与任务。
+- release/cache identity 为 `20260812-v1426-supplier-avatar-copy-limit-1`。本版不新增 schema、迁移、依赖、持久目录或 Nginx 变化；生产只新增独立绿色 systemd/路由实例并保留 v142.5 在线回滚，没有修改或覆盖生产 SQLite、账号、媒体与任务。
 
 ### 验证边界
 
