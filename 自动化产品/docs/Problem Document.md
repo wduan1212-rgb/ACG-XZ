@@ -28,6 +28,12 @@
 - **根因**：先对整个单元做宽泛 `v1425→v1426` 替换，再替换包含 v1425 的完整旧文件名/目录名，使第二步精确模式不再命中。单元语法本身合法，`systemd-analyze verify` 也不会验证外部 env/工作目录在运行时一定存在。
 - **处置与防回归**：候选未接流量时立即停止其自动重启，逐字段精确修正 env、工作目录、release root、主/sidecar 端口，并在 `daemon-reload` 前后分别校验目标文件/目录存在、单元展开值、health/build ID、readiness 与 `NRestarts=0`。以后 sibling 单元禁止按版本号做全文件宽泛替换；必须用明确字段映射生成，并在启用前断言 `EnvironmentFile`、`WorkingDirectory`、可执行文件和 release ID 全部指向同一候选。旧在线服务必须保留到绿环境和真实 API 验收完成。
 
+## 2026-08-12 v142.7 生产候选：既有 registry 冲突必须连同数量一起冻结，不能放宽成通用媒体豁免
+
+- **现象**：旧 v142.6 始终 active/RW，新 v142.7 sidecar 在无流量端口 ready/RW，但新主服务启动审计只报 `private-media-registry-coverage`。只读现场重算显示缺失集合 SHA、`unisolated=1`、`registry-missing=1`、`effective pending=0` 均与既有证据完全一致，同时历史数据仍有 `registryConflicts=5`；生产 SQLite、媒体文件和正常流量未受影响。
+- **根因**：原精确例外只冻结 release、缺失集合摘要和未隔离数量，允许的 issue 集合没有 `registryConflicts`。旧进程保存的是启动时快照，继续服务并不代表新进程可以在未审计的情况下继承当前冲突事实。
+- **修复与防回归**：新增 release 外 `ACG_WRITE_GATE_MEDIA_EXCEPTION_REGISTRY_CONFLICTS` 精确数量绑定。只有 release、缺失 SHA、unisolated、registry-missing、registry-conflicts、effective pending 和 issue 集合同时逐项匹配时，既有事实才降为 warning；冲突数量增减、issue 缺失/新增或任何摘要漂移仍阻断新候选。该处置不改数据库、不写 registry、不删引用、不造媒体，也不把将来的媒体或归属异常无条件忽略。
+
 ## 2026-08-12 v142.6 本地修复：供应商团队不在 team_members，内容账号头像需独立精确授权
 
 - **现象**：供应商母账号在账号编辑器选择新头像后，文件上传返回“私有媒体归属登记失败，本次未开放文件”；供应商账号看板中创作端已有头像也集中显示为破图，但账号名称、主页等非文件字段仍可读取。

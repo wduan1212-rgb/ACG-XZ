@@ -311,6 +311,52 @@ uvicorn.run(
             gate["writeGateWarnings"],
         )
 
+        conflict_checks = {
+            **checks,
+            "mediaRegistry": {
+                **checks["mediaRegistry"],
+                "issues": [
+                    *checks["mediaRegistry"]["issues"],
+                    "registryConflicts",
+                ],
+                "counts": {
+                    **checks["mediaRegistry"]["counts"],
+                    "registryConflicts": 5,
+                },
+            },
+        }
+        conflict_exception = {
+            **exception,
+            "ACG_WRITE_GATE_MEDIA_EXCEPTION_REGISTRY_CONFLICTS": "5",
+        }
+        mode, production, read_only, mode_status = self.production_mode()
+        with mode, production, read_only, mode_status, patch.dict(
+            os.environ, conflict_exception, clear=False,
+        ):
+            conflict_gate = server_main._production_write_contract_readiness(
+                conflict_checks
+            )
+        self.assertTrue(conflict_gate["ok"])
+
+        conflict_drift = {
+            **conflict_checks,
+            "mediaRegistry": {
+                **conflict_checks["mediaRegistry"],
+                "counts": {
+                    **conflict_checks["mediaRegistry"]["counts"],
+                    "registryConflicts": 6,
+                },
+            },
+        }
+        mode, production, read_only, mode_status = self.production_mode()
+        with mode, production, read_only, mode_status, patch.dict(
+            os.environ, conflict_exception, clear=False,
+        ):
+            rejected_conflict_drift = server_main._production_write_contract_readiness(
+                conflict_drift
+            )
+        self.assertFalse(rejected_conflict_drift["ok"])
+
         for mutation in (
             {"missingReferencedFilesSha256": "b" * 64},
             {"counts": {"unisolatedMissingReferencedFiles": 2, "registryMissingFiles": 2, "effectivePendingRows": 0}},

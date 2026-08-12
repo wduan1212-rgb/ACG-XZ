@@ -14,7 +14,8 @@
 ### 本地验证边界
 
 - 真实 Chromium 在独立临时数据库与 fake image provider 上连续跑 `10/10`：每轮都人为延迟图片配置探测，浏览器仍等待并选中真实图片适配器；项目 PUT 均为 `200`、后台 job 均为 `202`、最终均为 `succeeded` 且保存 `1` 张图，计划日配额查询也返回所请求日期。trace 为 `trace-1786529452245.trace`。该证据验证浏览器、静态模块、主服务、SQLite scope、后台 worker、媒体落盘和日期查询时序，不使用生产数据或付费 provider。
-- 当前 release verifier：Phase 0 `8a653bbe6b87e4fbd37f433ea6f718e7220d50e1e59c81486d54c6af42f97b52`，ESM `61 modules / 349 edges`、graph `5893310e3b9d7b656ef730ef54309ec27f645b5fcdbe7ae5a48494edaf0b6bd9`、closure `99bdd3f5e967621fba60ed4cd89cd7c642f586e6bed1e8bbf8c2403e43d62883`，canvas `63 files / 1,770,288 bytes / 3ba12d2d53d68f89918077ae3a0ef532eba56a1110a2cac86d0c6c0cad44b065`，runtime `65 files / 3,323,585 bytes / 4063a6e226e7aa8f4497dc811e66462adc68d1972a93cd7112be3fc9fcf1cd6d`。
+- 当前 release verifier：Phase 0 `e6d8163161d1038332582ee7f1b412315ba1e2b45832dacb3e4cfab61e055d09`，ESM `61 modules / 349 edges`、graph `5893310e3b9d7b656ef730ef54309ec27f645b5fcdbe7ae5a48494edaf0b6bd9`、closure `99bdd3f5e967621fba60ed4cd89cd7c642f586e6bed1e8bbf8c2403e43d62883`，canvas `63 files / 1,770,288 bytes / 3ba12d2d53d68f89918077ae3a0ef532eba56a1110a2cac86d0c6c0cad44b065`，runtime `65 files / 3,323,973 bytes / d7e4528cebaf2111dfd2f4d1875aafc0aaad250fb3c37d730f4256c69425c527`。
+- 目标 Ubuntu x86_64 已在无私密、锁定 20 包的一次性 Python 3.12 环境完成 `825 collected / 824 passed / 1 approved skip`；视频 sidecar `160/160`、Node `129/129`、三套现有 Linux wheelhouse 与本版锁 SHA 精确一致且 `pip check` 通过。
 - 生产真实 provider 、目标 Linux 锁定全量与新旧服务并行切流仍是独立部署门禁；只有无流量候选真实最小图片调用及切流后受控无限画布/批量图文都完整成功，才能记为生产闭环。
 
 ## v142.6 - 2026-08-12（生产：供应商头像与批量文案发布边界）

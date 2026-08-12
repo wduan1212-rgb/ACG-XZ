@@ -581,11 +581,15 @@ def _exact_media_registry_exception_matches(checks):
     expected_count_text = str(
         os.getenv("ACG_WRITE_GATE_MEDIA_EXCEPTION_UNISOLATED", "") or ""
     ).strip()
+    expected_conflicts_text = str(
+        os.getenv("ACG_WRITE_GATE_MEDIA_EXCEPTION_REGISTRY_CONFLICTS", "0") or "0"
+    ).strip()
     if (
         not expected_release
         or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
         or not expected_count_text.isdigit()
         or int(expected_count_text) <= 0
+        or not expected_conflicts_text.isdigit()
     ):
         return False
     release = checks.get("release") if isinstance(checks.get("release"), dict) else {}
@@ -594,6 +598,7 @@ def _exact_media_registry_exception_matches(checks):
     issues = set(str(item) for item in (media.get("issues") or []))
     allowed_issues = {
         "missingReferencedFiles",
+        "registryConflicts",
         "registryMissingFiles",
         "unisolatedMissingReferencedFiles",
     }
@@ -607,6 +612,9 @@ def _exact_media_registry_exception_matches(checks):
         == int(expected_count_text)
         and int(counts.get("registryMissingFiles") or 0)
         == int(expected_count_text)
+        and int(counts.get("registryConflicts") or 0)
+        == int(expected_conflicts_text)
+        and (("registryConflicts" in issues) == (int(expected_conflicts_text) > 0))
         and int(counts.get("effectivePendingRows") or 0) == 0
         and issues
         and issues.issubset(allowed_issues)
