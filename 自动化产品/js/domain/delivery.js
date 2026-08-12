@@ -4,15 +4,15 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { setStage, touch } from "./productions.js?v=20260812-v1427-generation-startup-sync-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { assertPublishText } from "./publishRules.js?v=20260812-v1427-generation-startup-sync-1";
 import {
   accountPublishAvailable,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "./productionQuota.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+} from "./productionQuota.js?v=20260812-v1427-generation-startup-sync-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -268,9 +268,10 @@ export async function deliver(p, opts = {}) {
     error.imageIssues = imageIssues;
     throw error;
   }
-  await refreshAccountPublishQuotas([acc.id], { force: true });
-  if (!accountPublishAvailable(acc.id)) {
-    throw new Error("该账号今日已达到 2 条内容的发布上限");
+  const planDate = normalizePlanDate(opts.planDate);
+  await refreshAccountPublishQuotas([acc.id], { force: true, dayKey: planDate });
+  if (!accountPublishAvailable(acc.id, 1, planDate)) {
+    throw new Error(`该账号 ${planDate} 已达到 2 条内容的发布上限`);
   }
   assertPublishText({
     platform: acc.platform,
@@ -281,7 +282,6 @@ export async function deliver(p, opts = {}) {
     window.__toast && window.__toast("完整成片尚未合成，请先回到剪辑台完成合成", "error");
     return null;
   }
-  const planDate = normalizePlanDate(opts.planDate);
   const productTag = String(opts.productTag || "").trim().slice(0, 20);
   if (!productTag) { window.__toast && window.__toast("请在发布弹窗填写产品标签", "error"); return null; }
   const nextExportSeq = (acc.exportSeq || 0) + 1;
@@ -331,7 +331,7 @@ export async function deliver(p, opts = {}) {
     } catch (error) {
       if (Number(error?.status || 0) === 409) {
         invalidateAccountPublishQuotas([acc.id]);
-        void refreshAccountPublishQuotas([acc.id], { force: true });
+        void refreshAccountPublishQuotas([acc.id], { force: true, dayKey: planDate });
       }
       throw error;
     }
@@ -356,7 +356,7 @@ export async function deliver(p, opts = {}) {
       cacheCanonicalDocuments("productions", response.production),
     ]);
     invalidateAccountPublishQuotas([acc.id]);
-    await refreshAccountPublishQuotas([acc.id], { force: true });
+    await refreshAccountPublishQuotas([acc.id], { force: true, dayKey: planDate });
     save("meta");
     notify("delivery", `「${canonical.title || canonical.name}」已发布`, `#${String(canonical.pubSeq || 0).padStart(3, "0")} · ${canonical.name}${canonical.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
     return canonical;

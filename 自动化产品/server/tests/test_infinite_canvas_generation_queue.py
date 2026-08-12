@@ -281,7 +281,7 @@ def test_generation_source_contract_persists_progressive_results():
         CANVAS_ROOT / "src" / "components" / "workspace" / "useStudioActions.ts"
     ).read_text(encoding="utf-8")
     assert "runConcurrentQueue" in source
-    assert "limit: 3" in source
+    assert "limit: 3" not in source
     assert "persistCanvasBlob(image.dataUrl, id, {" in source
     assert "generationReceipt: image.generationReceipt" in source
     assert "idempotencyKey: id" in source
@@ -298,6 +298,11 @@ def test_generation_source_contract_persists_progressive_results():
     assert "resultItemIds: [job.id]" in source
     assert "resultItemIds: ids" in source
     assert "idempotencyKey: job.id" in source
+    assert source.count("await flushCanvasProjectServer(projectId)") == 2
+    assert "const flushCanvasProjectServer = useStore((s) => s.flushCanvasProjectServer)" in source
+    assert source.count("limit: CANVAS_IMAGE_CONCURRENCY") == 2
+    queue_source = (CANVAS_ROOT / "src" / "lib" / "concurrencyQueue.ts").read_text(encoding="utf-8")
+    assert "export const CANVAS_IMAGE_CONCURRENCY = 2" in queue_source
     assert "await flushCanvasProjectLocal(projectId)" in source
     assert 'generationStatus: "running"' in source
     assert "new CanvasRequestLifecycle(projectId)" in source
@@ -310,6 +315,10 @@ def test_generation_source_contract_persists_progressive_results():
     assert "Promise.allSettled" not in source
     api_source = (CANVAS_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
     assert 'throw canvasHttpError(422, String(job.error || "图片生成失败")' in api_source
+    sync_source = (CANVAS_ROOT / "src" / "lib" / "canvasSync.ts").read_text(encoding="utf-8")
+    assert "export async function flushCanvasProjectPut" in sync_source
+    assert "const previous = putChains.get(sourceId) || Promise.resolve()" in sync_source
+    assert "outcome = { result: await putCanvasProject(sourceId, next), sent: next }" in sync_source
 
 
 def load_tests(loader, tests, pattern):

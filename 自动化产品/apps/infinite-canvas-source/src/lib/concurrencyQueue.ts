@@ -4,6 +4,11 @@ export interface ConcurrentQueueOptions {
   onSettled?: (index: number, active: number) => void;
 }
 
+// Keep one of the server's three image submit slots available to another
+// member or surface. A single canvas can still make useful parallel progress,
+// but it must not monopolize the shared production provider.
+export const CANVAS_IMAGE_CONCURRENCY = 2;
+
 /**
  * Run independent jobs with a hard client-side concurrency ceiling.
  *

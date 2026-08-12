@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260812-v1427-generation-startup-sync-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -620,7 +620,7 @@ function truncateImagePublishCopy(body = "", tags = [], maxLength = XHS_IMAGE_CO
   return `${boundedBody}${boundedBody && tagLine ? "\n" : ""}${tagLine}`.trim();
 }
 
-function ensureImagePublishTags(copy = "", product = null, sourceText = "") {
+function ensureImagePublishTags(copy = "", product = null, sourceText = "", { truncate = true } = {}) {
   let out = normalizeGeneratedEscapes(copy);
   const productTags = explicitProductTags(sourceText, product);
   if (sourceText) {
@@ -641,7 +641,9 @@ function ensureImagePublishTags(copy = "", product = null, sourceText = "") {
     .replace(/ {2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return truncateImagePublishCopy(body, orderedTags);
+  if (truncate) return truncateImagePublishCopy(body, orderedTags);
+  const tagLine = orderedTags.join(" ");
+  return `${body}${body && tagLine ? "\n" : ""}${tagLine}`.trim();
 }
 
 const IMAGE_COPY_CROWD_ADDRESS_RE = /兄弟们|家人们|姐妹们|宝子们|老铁们|集美们|亲们|各位宝宝|各位宝子|朋友们/;
@@ -2930,25 +2932,31 @@ ${productRelationLine(rel.slice(0, 2))}
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const content = await llm([
-          { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文必须自然覆盖视觉编辑给出的核心主题词，不能只提 logo 或只写一个泛化功能。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签；正文和标签合计不得超过 1000 个 Unicode 字符。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。\n${copyProductBrief(product)}${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，再写正文。` }
+          { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文必须自然覆盖视觉编辑给出的核心主题词，不能只提 logo 或只写一个泛化功能。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签；请把正文和标签完整控制在 900 个 Unicode 字符以内，硬性要求最终必须少于 1000 个 Unicode 字符。不能先写长文再截断，必须从结构和篇幅上完整收束。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。\n${copyProductBrief(product)}${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，并在第一次输出时就把正文与标签完整控制在 900 个 Unicode 字符以内。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         let copyText = normalizeOwnProductNoise(
           cleanSingleImagePublishCopy(
-            ensureImagePublishTags(cleanSingleImagePublishCopy(assertProfessionalImageCopy(data.copy || data.body || ""), sourceTitle), null, sourceTitle),
+            ensureImagePublishTags(cleanSingleImagePublishCopy(assertProfessionalImageCopy(data.copy || data.body || ""), sourceTitle), null, sourceTitle, { truncate: false }),
             sourceTitle,
           ),
           chineseProductDisplayName(product, "百度搭子"),
         );
-        // Product-name normalization may expand a phrase after the first
-        // length pass. Rebuild tags and cap once more at the final boundary so
-        // the exact value handed to batch cards is always publishable.
+        // Product-name normalization may expand a phrase after the first pass.
+        // Rebuild tags without slicing. The first request is responsible for
+        // staying under the limit; a violating response is rejected intact and
+        // is never truncated or followed by an automatic rewrite request.
         copyText = cleanSingleImagePublishCopy(
-          ensureImagePublishTags(copyText, null, sourceTitle),
+          ensureImagePublishTags(copyText, null, sourceTitle, { truncate: false }),
           sourceTitle,
         );
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");
+        if (unicodeTextLength(copyText) >= XHS_IMAGE_COPY_MAX_LENGTH) {
+          const error = new Error("模型返回的图文正文连同标签超过 1000 字，本次已停止且未截断");
+          error.code = "IMAGE_COPY_TOO_LONG";
+          throw error;
+        }
         if (requiredTerms.length && !imageCopyContainsReferenceTerms(copyText, requiredTerms)) {
           throw new Error("正文未覆盖统一参考图确认的核心主题，已停止生成泛化文案");
         }
@@ -2957,6 +2965,7 @@ ${productRelationLine(rel.slice(0, 2))}
         return { title: sourceTitle, copy: copyText, source: this.lastSource };
       } catch (error) {
         lastError = error;
+        if (error?.code === "IMAGE_COPY_TOO_LONG") break;
       }
     }
     this.lastSource = "error";

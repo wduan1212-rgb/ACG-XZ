@@ -58,16 +58,20 @@ test("Baige catalog carries verified facts and explicit-title routing", () => {
   assert.match(orchestrator, /p\.artifacts\.script\.productId = productId/);
 });
 
-test("account quota counts publishes, refreshes stale views, and never blocks draft creation", () => {
+test("account quota counts scheduled publishes by plan date and never blocks draft creation", () => {
   const quota = readFileSync(new URL("../js/domain/productionQuota.js", import.meta.url), "utf8");
   const productions = readFileSync(new URL("../js/domain/productions.js", import.meta.url), "utf8");
   const delivery = readFileSync(new URL("../js/domain/delivery.js", import.meta.url), "utf8");
   assert.match(quota, /state\.assets\.filter\(asset =>/);
   assert.doesNotMatch(quota, /state\.productions\.filter/);
   assert.match(quota, /delivery\.quotaPublishedAt \|\| delivery\.deliveredAt/);
+  assert.match(quota, /delivery\.planDate/);
+  assert.match(quota, /remote\.accountPublishQuotas\(needed, selectedDay\)/);
   assert.match(quota, /window\.addEventListener\("focus", refreshVisible\)/);
   assert.match(quota, /setInterval\(refreshVisible, AUTO_REFRESH_MS\)/);
   assert.doesNotMatch(productions, /validateAccountCreationRequests/);
-  assert.match(delivery, /await refreshAccountPublishQuotas\(\[acc\.id\], \{ force: true \}\)/);
-  assert.match(delivery, /accountPublishAvailable\(acc\.id\)/);
+  assert.match(delivery, /dayKey: planDate/);
+  assert.match(delivery, /accountPublishAvailable\(acc\.id, 1, planDate\)/);
+  const planView = readFileSync(new URL("../js/agent/view.js", import.meta.url), "utf8");
+  assert.doesNotMatch(planView, /accountPublishAvailable/);
 });

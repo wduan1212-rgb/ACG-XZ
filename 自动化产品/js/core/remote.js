@@ -334,11 +334,13 @@ export function syncCollection(name, items, { timeoutMs = RECOVERY_SYNC_TIMEOUT_
   });
 }
 
-export function accountPublishQuotas(accountIds = []) {
+export function accountPublishQuotas(accountIds = [], dayKey = "") {
   if (!_on || !_token || _authBlocked) return Promise.resolve(null);
   const ids = [...new Set((accountIds || []).map(String).filter(Boolean))].slice(0, 200);
   if (!ids.length) return Promise.resolve({ dayKey: "", limit: 2, items: [] });
-  return req("/api/account-publish-quotas?accountIds=" + encodeURIComponent(ids.join(",")));
+  const query = new URLSearchParams({ accountIds: ids.join(",") });
+  if (dayKey) query.set("dayKey", String(dayKey));
+  return req("/api/account-publish-quotas?" + query.toString());
 }
 
 export function qianfanTopicIdeas(payload, idempotencyKey = "") {

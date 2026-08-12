@@ -25,7 +25,7 @@ import { uid } from "@/lib/util";
 import { isImageItem } from "@/lib/types";
 import { parseCount, prepareSingleImagePrompt } from "@/lib/agent";
 import { planReferenceEdits } from "@/lib/referenceEditPlan";
-import { runConcurrentQueue } from "@/lib/concurrencyQueue";
+import { CANVAS_IMAGE_CONCURRENCY, runConcurrentQueue } from "@/lib/concurrencyQueue";
 import {
   CanvasRequestError,
   canvasRequestUserMessage,
@@ -73,6 +73,7 @@ export function useStudioActions(projectId: string) {
   const recordFailure = useStore((s) => s.recordFailure);
   const reserveDrafts = useStore((s) => s.reserveDrafts);
   const flushCanvasProjectLocal = useStore((s) => s.flushCanvasProjectLocal);
+  const flushCanvasProjectServer = useStore((s) => s.flushCanvasProjectServer);
   const requestLifecycle = useMemo(
     () => new CanvasRequestLifecycle(projectId),
     [projectId],
@@ -409,7 +410,7 @@ export function useStudioActions(projectId: string) {
         });
         // Persist the recoverable edit jobs before the first paid request.
         // Closing the canvas after this point only stops local polling.
-        await flushCanvasProjectLocal(projectId);
+        await flushCanvasProjectServer(projectId);
 
         const results = await runConcurrentQueue(
           jobs.map((job) => async () => {
@@ -461,7 +462,7 @@ export function useStudioActions(projectId: string) {
               return job.id;
           }),
           {
-            limit: 3,
+            limit: CANVAS_IMAGE_CONCURRENCY,
             onStart: (index) => {
               const job = jobs[index];
               updateItem(projectId, job.id, {
@@ -662,7 +663,7 @@ export function useStudioActions(projectId: string) {
         updateTask(projectId, task.id, { resultItemIds: ids });
         // Commit recoverable placeholders before the first paid server job is
         // submitted. Leaving the page now only stops local polling.
-        await flushCanvasProjectLocal(projectId);
+        await flushCanvasProjectServer(projectId);
         let settledCount = 0;
         const results = await runConcurrentQueue(
           ids.map((id, index) => async () => {
@@ -707,7 +708,7 @@ export function useStudioActions(projectId: string) {
             return id;
           }),
           {
-            limit: 3,
+            limit: CANVAS_IMAGE_CONCURRENCY,
             onStart: (index) => {
               updateItem(projectId, ids[index], {
                 label: `生成中 ${index + 1}/${count}`,
@@ -838,6 +839,7 @@ export function useStudioActions(projectId: string) {
       recordGeneration,
       recordFailure,
       flushCanvasProjectLocal,
+      flushCanvasProjectServer,
       updateTask,
       requestLifecycle,
     ],

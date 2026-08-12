@@ -118,6 +118,30 @@ class AccountCreationAndPublishRulesTest(unittest.TestCase):
             {"platform": "视频号"}, {"title": "十六字内无标点标题", "copy": ""}
         ))
 
+    def test_legacy_scheduled_delivery_without_quota_stamp_counts_on_plan_date(self):
+        admin, member, account = self._team_members_and_account()
+        now = int(time.time() * 1000)
+        store.upsert_docs("assets", [{
+            "id": "legacy-scheduled-delivery",
+            "accountId": account["id"],
+            "ownerId": admin[0],
+            "delivered": True,
+            "planDate": "2026-08-19",
+            "deliveredAt": now,
+            "createdAt": now,
+            "updatedAt": now,
+        }], actor_id=admin[0])
+
+        scheduled = store.account_publish_quotas(
+            member[0], [account["id"]], "2026-08-19",
+        )
+        today = store.account_publish_quotas(
+            member[0], [account["id"]], store._account_publish_day_key(now),
+        )
+        self.assertEqual(1, scheduled["items"][0]["used"])
+        self.assertEqual(0, today["items"][0]["used"])
+        self.assertEqual("", store._valid_publish_day_key("2026-02-31"))
+
 
 if __name__ == "__main__":
     unittest.main()

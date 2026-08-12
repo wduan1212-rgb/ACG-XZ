@@ -78,6 +78,7 @@ class SupplierStateTest(unittest.TestCase):
                         "videoUrl": "/api/video/composed/static.mp4",
                         "coverAssetId": "cover-static-video",
                         "delivered": True,
+                        "planDate": "2026-08-18",
                         "productTag": "百度搭子",
                         "publishedUrl": "https://stale.example",
                         "viewCount": 999,
@@ -114,14 +115,20 @@ class SupplierStateTest(unittest.TestCase):
             self.assertTrue(first["assets"][0]["shared"])
             self.assertEqual(
                 first["delivery"]["quotaDayKey"],
-                store._account_publish_day_key(),
+                "2026-08-18",
             )
             self.assertGreater(first["delivery"]["quotaPublishedAt"], 0)
             self.assertEqual(
                 store.account_publish_quotas(
-                    "creator-a", ["account-static-video"],
+                    "creator-a", ["account-static-video"], "2026-08-18",
                 )["items"][0]["used"],
                 1,
+            )
+            self.assertEqual(
+                store.account_publish_quotas(
+                    "creator-a", ["account-static-video"], "2026-08-19",
+                )["items"][0]["used"],
+                0,
             )
 
             retried, retry_error = store.publish_production_bundle(
@@ -134,7 +141,7 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(retried["account"]["exportSeq"], 5)
             self.assertEqual(
                 store.account_publish_quotas(
-                    "creator-a", ["account-static-video"],
+                    "creator-a", ["account-static-video"], "2026-08-18",
                 )["items"][0]["used"],
                 1,
             )

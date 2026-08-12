@@ -271,3 +271,33 @@ export function scheduleCanvasProjectPut(
   }, options.delayMs ?? 900);
   putTimers.set(sourceId, timer);
 }
+
+/** Commit one project snapshot after every already-started PUT has settled.
+ *
+ * Generation jobs bind to an existing server project and its resource scope.
+ * A verified local checkpoint alone is therefore not enough at the paid-call
+ * boundary. This serialized flush evaluates the payload only after the prior
+ * request has advanced its revision, preventing two PUTs with the same base.
+ */
+export async function flushCanvasProjectPut(
+  sourceId: string,
+  payload: () => CanvasProjectPutPayload | null,
+): Promise<{ result: CanvasProjectPutResult; sent: CanvasProjectPutPayload } | null> {
+  if (!IS_PLATFORM_EMBED) return null;
+  cancelCanvasProjectPut(sourceId);
+  const previous = putChains.get(sourceId) || Promise.resolve();
+  let outcome: { result: CanvasProjectPutResult; sent: CanvasProjectPutPayload } | null = null;
+  const run = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const next = payload();
+      if (!next) return;
+      outcome = { result: await putCanvasProject(sourceId, next), sent: next };
+    })
+    .finally(() => {
+      if (putChains.get(sourceId) === run) putChains.delete(sourceId);
+    });
+  putChains.set(sourceId, run);
+  await run;
+  return outcome;
+}

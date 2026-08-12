@@ -4,24 +4,24 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260812-v1427-generation-startup-sync-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+} from "./orchestrator.js?v=20260812-v1427-generation-startup-sync-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260812-v1427-generation-startup-sync-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
-import { deliver } from "../domain/delivery.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260812-v1427-generation-startup-sync-1";
+import { deliver } from "../domain/delivery.js?v=20260812-v1427-generation-startup-sync-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { accountPublishAvailable, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260812-v1427-generation-startup-sync-1";
 import { qianfanTopicIdeas } from "../core/remote.js";
-import { validatePublishText } from "../domain/publishRules.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { validatePublishText } from "../domain/publishRules.js?v=20260812-v1427-generation-startup-sync-1";
 
 let mounted = false;
 let rootEl = null;
@@ -620,7 +620,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260812-v1426-supplier-avatar-copy-limit-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260812-v1427-generation-startup-sync-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -700,10 +700,6 @@ function wire(root) {
     } else {
       const id = accBtn.dataset.pacc;
       const i = m.payload.accountIds.indexOf(id);
-      if (i < 0 && !accountPublishAvailable(id)) {
-        toast("该账号今日已达 2 条发布上限，无法再选择", "error");
-        return true;
-      }
       i >= 0 ? m.payload.accountIds.splice(i, 1) : m.payload.accountIds.push(id);
       m.payload.accountCount = m.payload.accountIds.length;
       m.payload.manualAccountSelection = true;
@@ -818,7 +814,7 @@ function wire(root) {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         const group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
-        const pool = matchAccounts({ group, tags: [], sort: "" }).filter(account => accountPublishAvailable(account.id));
+        const pool = matchAccounts({ group, tags: [], sort: "" });
         const allSelected = pool.length > 0 && pool.every(account => (m.payload.accountIds || []).includes(account.id));
         m.payload.accountIds = allSelected ? [] : pool.map(account => account.id);
         m.payload.accountCount = m.payload.accountIds.length;
@@ -871,8 +867,7 @@ function wire(root) {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         m.payload.group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
-        const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" })
-          .filter(account => accountPublishAvailable(account.id));
+        const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" });
         if (!pool.length) { toast("当前条件下没有可选账号"); break; }
         const picked = pool
           .map(a => ({ a, r: Math.random() }))

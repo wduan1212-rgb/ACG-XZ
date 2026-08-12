@@ -265,6 +265,38 @@ export function imageApiConfigured() {
   return serverImage.configured || state.apiKeys.some(x => x.type === "image" && x.secret);
 }
 
+/* Batch recovery may start as soon as its remote collections hydrate, while
+   the server-provider probe is still in flight. Never turn that harmless
+   startup race into a persisted "image service is not configured" failure.
+   Recheck once at the actual submit boundary and return only a real adapter. */
+export async function imageProviderReadyForSubmit() {
+  const localKeyConfigured = () => state.apiKeys.some(
+    item => item.type === "image" && item.secret
+  );
+  if (!serverImage.checked || serverImage.failed || (!serverImage.configured && !localKeyConfigured())) {
+    await refreshProviderStatus().catch(() => null);
+  }
+  if (remote.isOn() && !remote.hasToken()) {
+    const error = new Error("登录已过期，任务已保留；请重新登录后继续。");
+    error.status = 401;
+    throw error;
+  }
+  if (serverImage.failed && !localKeyConfigured()) {
+    throw new Error("图片服务配置检测失败，任务已保留，请稍后重试。");
+  }
+  if (!imageApiConfigured()) {
+    throw new Error("图片生成服务未配置");
+  }
+  if (serverImage.configured && serverImage.reachable === false) {
+    throw new Error("图片生成服务暂时不可达，任务已保留，请稍后重试。");
+  }
+  const provider = activeProviderFor("image");
+  if (!provider || provider.mock) {
+    throw new Error("图片生成服务尚未就绪，任务已保留，请稍后重试。");
+  }
+  return provider;
+}
+
 const DEFAULT_MAAS_IMAGE_ENDPOINT = "https://tokenhub.tencentmaas.com/v1/aiart/gtimage";
 
 function normalizeImageEndpoint(provider = "") {

@@ -712,6 +712,59 @@ class CustomCreationStoreTest(unittest.TestCase):
                 [],
             )
 
+    def test_scheduled_custom_publishes_use_selected_day_quota(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            made, error = store.save_custom_project("creator-a", {
+                "kind": "video",
+                "title": "定时发布配额",
+            })
+            self.assertIsNone(error)
+            store.upsert_docs("accounts", [{
+                "id": "account-video",
+                "name": "定时视频账号",
+                "platform": "抖音",
+                "mode": "视频",
+                "subType": "数字人",
+                "monthlyDone": 0,
+                "exportSeq": 0,
+                "updatedAt": 10,
+            }])
+
+            def publish(suffix, day):
+                bundle = self._video_bundle(made["id"], suffix)
+                bundle["delivery"]["planDate"] = day
+                return store.publish_custom_project_bundle(
+                    made["id"], "creator-a", bundle,
+                )
+
+            first, first_error = publish("future-18-a", "2026-08-18")
+            second, second_error = publish("future-18-b", "2026-08-18")
+            third, third_error = publish("future-18-c", "2026-08-18")
+            next_day, next_day_error = publish("future-19-a", "2026-08-19")
+
+            self.assertIsNone(first_error)
+            self.assertIsNone(second_error)
+            self.assertIsNone(third)
+            self.assertEqual("account_daily_publish_quota_exceeded", third_error)
+            self.assertIsNone(next_day_error)
+            self.assertEqual("2026-08-18", first["delivery"]["quotaDayKey"])
+            self.assertEqual("2026-08-18", second["delivery"]["quotaDayKey"])
+            self.assertEqual("2026-08-19", next_day["delivery"]["quotaDayKey"])
+            self.assertGreater(first["delivery"]["quotaPublishedAt"], 0)
+            self.assertEqual(
+                2,
+                store.account_publish_quotas(
+                    "creator-a", ["account-video"], "2026-08-18",
+                )["items"][0]["used"],
+            )
+            self.assertEqual(
+                1,
+                store.account_publish_quotas(
+                    "creator-a", ["account-video"], "2026-08-19",
+                )["items"][0]["used"],
+            )
+
     def test_concurrent_custom_publishes_atomically_enforce_quota_and_sequences(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -873,7 +926,8 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("projectState.workshopProjectId", publishing)
         self.assertIn("activeCustomPublishModal?.el?.isConnected", publishing)
         self.assertIn("await refreshAccountPublishQuotas", publishing)
-        self.assertIn("accountPublishAvailable(accountId)", publishing)
+        self.assertIn("accountPublishAvailable(accountId, 1, planDate)", publishing)
+        self.assertIn("dayKey: planDate", publishing)
         self.assertIn("assertPublishText({ platform: account.platform", publishing)
         self.assertIn("await openCustomPublish(", shell)
         self.assertIn("coverAccountId !== accountId", publishing)

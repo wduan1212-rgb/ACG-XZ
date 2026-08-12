@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { AI } from "../api/ai.js?v=20260812-v1427-generation-startup-sync-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260812-v1427-generation-startup-sync-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260812-v1427-generation-startup-sync-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260812-v1427-generation-startup-sync-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
+import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260812-v1427-generation-startup-sync-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -750,9 +750,12 @@ async function generateVideoCoverInHouse(p, { force = false } = {}) {
   const A = p.artifacts?.boards || {};
   const cover = A.cover || null;
   if (!cover?.prompt || (!force && cover.assetId) || cover.status === "loading") return false;
-  if (!imageApiConfigured()) return false;
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) return false;
+  let provider;
+  try {
+    provider = await imageProviderReadyForSubmit();
+  } catch (_) {
+    return false;
+  }
   const key = providerKeyFor("image", provider);
   cover.status = "loading";
   cover.error = "";
@@ -804,9 +807,7 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
   const creative = A.creativeVideo;
   const storyboards = Array.isArray(creative?.storyboards) ? creative.storyboards : [];
   if (!storyboards.length) throw new Error("创意视频缺少可执行的故事版");
-  if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法用 image-2 生成故事版");
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) throw new Error("image-2 图片服务当前不可用");
+  const provider = await imageProviderReadyForSubmit();
   const key = providerKeyFor("image", provider);
   const originalRefIds = [...new Set([
     ...(creative.originalRefAssetIds || []),
@@ -1873,9 +1874,7 @@ function prepareExplicitBatchImageRetry(p) {
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {
-  if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法执行站内生图");
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) throw new Error("图片生成服务当前不可用");
+  const provider = await imageProviderReadyForSubmit();
   const key = providerKeyFor("image", provider);
   const A = p.artifacts.images;
   const refGroups = imageRefGroupsFor(acc, batch, p);
@@ -2002,9 +2001,7 @@ export async function regenerateBatchImage(p, imageIndex) {
   const batch = batchById(p.batchId);
   const acc = accountById(p.accountId);
   if (!batch || !acc) throw new Error("批次或账号不存在");
-  if (!imageApiConfigured()) throw new Error("图片生成服务未配置");
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) throw new Error("图片生成服务当前不可用");
+  const provider = await imageProviderReadyForSubmit();
   const key = providerKeyFor("image", provider);
   const refGroups = imageRefGroupsFor(acc, batch, p);
   const hasItemRefOverride = Object.prototype.hasOwnProperty.call(item, "refAssetIds");
@@ -2331,9 +2328,7 @@ async function staticFramePayload(assetId, duration, index) {
 }
 
 async function generateStaticFrames(p, batch, acc, prompts) {
-  if (!imageApiConfigured()) throw new Error("服务器未配置可用图片模型");
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) throw new Error("静态视频需要真实图片模型，当前仅有模拟能力");
+  const provider = await imageProviderReadyForSubmit();
   const key = providerKeyFor("image", provider);
   const refGroups = imageRefGroupsFor(acc, batch, p);
   const refs = [

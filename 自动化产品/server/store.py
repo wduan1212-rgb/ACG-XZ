@@ -15455,12 +15455,34 @@ def _account_publish_day_key(timestamp_ms=None):
     return moment.strftime("%Y-%m-%d")
 
 
+def _valid_publish_day_key(value):
+    day_key = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_key):
+        return ""
+    try:
+        datetime.strptime(day_key, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return day_key
+
+
+def _requested_publish_day_key(item, timestamp_ms=None):
+    """Use the selected publish date; submission time remains audit-only."""
+    raw = str((item or {}).get("planDate") or "").strip() if isinstance(item, dict) else ""
+    if raw:
+        return _valid_publish_day_key(raw)
+    return _account_publish_day_key(timestamp_ms)
+
+
 def _delivery_publish_day_key(item):
     if not isinstance(item, dict):
         return ""
-    stamped = str(item.get("quotaDayKey") or "").strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamped):
+    stamped = _valid_publish_day_key(item.get("quotaDayKey"))
+    if stamped:
         return stamped
+    planned = _valid_publish_day_key(item.get("planDate"))
+    if planned:
+        return planned
     timestamp_ms = (
         item.get("quotaPublishedAt")
         or item.get("deliveredAt")
@@ -15513,8 +15535,8 @@ def _account_publish_access_locked(conn, member_id, account_id):
     return True
 
 
-def account_publish_quotas(member_id, account_ids):
-    """Return today's tenant-wide published usage for visible accounts."""
+def account_publish_quotas(member_id, account_ids, day_key=""):
+    """Return tenant-wide published usage for a selected China calendar day."""
     requested = list(dict.fromkeys(
         str(item).strip() for item in (account_ids or []) if str(item).strip()
     ))[:200]
@@ -15526,10 +15548,10 @@ def account_publish_quotas(member_id, account_ids):
                 account_id for account_id in requested
                 if _account_publish_access_locked(conn, member_id, account_id)
             ]
-            day_key = _account_publish_day_key()
-            used = _account_publish_used_locked(conn, member_id, allowed, day_key)
+            requested_day = _valid_publish_day_key(day_key) or _account_publish_day_key()
+            used = _account_publish_used_locked(conn, member_id, allowed, requested_day)
             return {
-                "dayKey": day_key,
+                "dayKey": requested_day,
                 "limit": ACCOUNT_DAILY_PUBLISH_LIMIT,
                 "items": [
                     {
@@ -19019,7 +19041,9 @@ def publish_production_bundle(production_id, actor_id, payload):
 
             is_new = existing_delivery is None
             if is_new:
-                day_key = _account_publish_day_key()
+                day_key = _requested_publish_day_key(delivery_input, now)
+                if not day_key:
+                    return None, "invalid_publish_request"
                 used = _account_publish_used_locked(
                     conn, actor, [account_id], day_key,
                 )
@@ -19261,7 +19285,9 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
                 ).get(pid, 0)
                 return _custom_publish_result(project_result, account, existing_delivery), None
 
-            day_key = _account_publish_day_key()
+            day_key = _requested_publish_day_key(delivery_input, now)
+            if not day_key:
+                return None, "invalid_publish_request"
             used = _account_publish_used_locked(conn, owner, [account_id], day_key)
             if used.get(account_id, 0) >= ACCOUNT_DAILY_PUBLISH_LIMIT:
                 return None, "account_daily_publish_quota_exceeded"

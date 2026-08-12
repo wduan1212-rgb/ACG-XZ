@@ -179,7 +179,7 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # module-level instances make a clean import fail after another loop was closed
 # (and can bind production work to the wrong bootstrap loop).
 IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3)
-IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 30)
+IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)
 IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
 VIDEO_SUBMIT_CONCURRENCY = _positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10)
 _IMAGE_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
@@ -10774,20 +10774,20 @@ def publish_tags_create(req: PublishTagReq, me=Depends(require_member)):
 
 @app.get("/api/account-publish-quotas")
 def api_account_publish_quotas(
-    accountIds: str = "", me=Depends(require_member)
+    accountIds: str = "", dayKey: str = "", me=Depends(require_member)
 ):
     account_ids = [item.strip() for item in accountIds.split(",") if item.strip()]
     if not account_ids:
         return {"dayKey": "", "limit": store.ACCOUNT_DAILY_PUBLISH_LIMIT, "items": []}
-    return store.account_publish_quotas(me["id"], account_ids)
+    return store.account_publish_quotas(me["id"], account_ids, dayKey)
 
 
 @app.get("/api/account-creation-quotas")
 def api_account_creation_quotas_compat(
-    accountIds: str = "", me=Depends(require_member)
+    accountIds: str = "", dayKey: str = "", me=Depends(require_member)
 ):
     """Compatibility alias for stale clients; semantics are publish-only."""
-    return api_account_publish_quotas(accountIds, me)
+    return api_account_publish_quotas(accountIds, dayKey, me)
 
 
 @app.put("/api/db/{collection}")

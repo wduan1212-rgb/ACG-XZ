@@ -1,21 +1,21 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { AI } from "../api/ai.js?v=20260812-v1427-generation-startup-sync-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260812-v1427-generation-startup-sync-1";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260812-v1427-generation-startup-sync-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260812-v1427-generation-startup-sync-1";
 import { isAccountDisabled } from "../domain/accounts.js";
 import {
   accountPublishAvailable,
   accountPublishQuota,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "../domain/productionQuota.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
+} from "../domain/productionQuota.js?v=20260812-v1427-generation-startup-sync-1";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260812-v1427-generation-startup-sync-1";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
@@ -481,21 +481,15 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
     toast(`请先创建至少一个${kind === "video" ? "视频号" : "图文"}账号`, "error");
     return null;
   }
-  await refreshAccountPublishQuotas(accounts.map(account => account.id), { force: true });
-  const availableAccounts = accounts.filter(account => accountPublishAvailable(account.id));
-  if (!availableAccounts.length) {
-    toast("可用账号今日均已达到 2 条内容的发布上限", "error");
-    return null;
-  }
   const products = state.products.filter(product => product?.id);
   if (!products.length) {
     toast("请先在设置中配置至少一个产品", "error");
     return null;
   }
   const requestedAccountId = String(draft.accountId || output.accountId || "");
-  const selectedAccountId = availableAccounts.some(account => account.id === requestedAccountId)
+  const selectedAccountId = accounts.some(account => account.id === requestedAccountId)
     ? requestedAccountId
-    : availableAccounts[0].id;
+    : accounts[0].id;
   const requestedProductId = String(draft.productId || output.productId || "");
   const selectedProductId = products.some(product => product.id === requestedProductId)
     ? requestedProductId
@@ -1176,10 +1170,12 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
           const productId = productInput.value;
           const product = productById(productId);
           const title = titleInput.value.trim();
+          const planDate = panel.querySelector("#customPublishDate").value;
           if (!canDeliver()) throw new Error("当前账号没有发布权限");
           if (!account) throw new Error("请先选择发布账号");
-          await refreshAccountPublishQuotas([accountId], { force: true });
-          if (!accountPublishAvailable(accountId)) throw new Error("该账号今日已达到 2 条内容的发布上限");
+          if (!planDate) throw new Error("请填写计划发布日期");
+          await refreshAccountPublishQuotas([accountId], { force: true, dayKey: planDate });
+          if (!accountPublishAvailable(accountId, 1, planDate)) throw new Error(`该账号 ${planDate} 已达到 2 条内容的发布上限`);
           if (!product) throw new Error("请先选择产品");
           if (!title) throw new Error("发布标题为必填项");
           assertPublishText({ platform: account.platform, title, copy: copyInput.value.trim() });
@@ -1188,8 +1184,6 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
             || coverAccountId !== accountId
             || coverProductId !== productId
           )) throw new Error("封面与当前账号或产品不一致，请重新生成或拖入");
-          const planDate = panel.querySelector("#customPublishDate").value;
-          if (!planDate) throw new Error("请填写计划发布日期");
           const productTag = productTagLabel(product) || "定制创作";
           const note = panel.querySelector("#customPublishNote").value.trim();
           const signature = publishSignature({
@@ -1290,7 +1284,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
               console.error("[custom-publish-atomic]", error);
               if (Number(error?.status || 0) === 409) {
                 invalidateAccountPublishQuotas([accountId]);
-                void refreshAccountPublishQuotas([accountId], { force: true });
+                void refreshAccountPublishQuotas([accountId], { force: true, dayKey: planDate });
               }
               if (definitivePublishFailure(error)) {
                 if ([403, 404].includes(Number(error?.status || 0))) {
@@ -1314,7 +1308,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
             releaseSyncHold = null;
             commitCustomDelivery(asset);
             invalidateAccountPublishQuotas([accountId]);
-            await refreshAccountPublishQuotas([accountId], { force: true });
+            await refreshAccountPublishQuotas([accountId], { force: true, dayKey: planDate });
           } else {
             publishedCount += 1;
           }

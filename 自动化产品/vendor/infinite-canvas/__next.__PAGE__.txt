@@ -1,6 +1,6 @@
 1:"$Sreact.fragment"
-2:I[9394,["264","static/chunks/264-1ad1e60eafd0937d.js","559","static/chunks/559-cddb636e76e3fbad.js","974","static/chunks/app/page-7d62adff118988bf.js"],"GithubPagesApp"]
+2:I[9394,["264","static/chunks/264-1ad1e60eafd0937d.js","559","static/chunks/559-436889619f5d6022.js","974","static/chunks/app/page-7d62adff118988bf.js"],"GithubPagesApp"]
 3:I[484,[],"OutletBoundary"]
 4:"$Sreact.suspense"
-0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{}],null,["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"x1h71-2JMZMwnsrFpEzrY"}
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{}],null,["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"xLqTULmeeaY9qs9fYmt9P"}
 5:null

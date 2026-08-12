@@ -21,7 +21,7 @@ def run_node(script: str) -> dict:
 
 
 class ImageCopyGenerationTest(unittest.TestCase):
-    def test_title_copy_caps_body_and_tags_together_at_1000_unicode_characters(self):
+    def test_title_copy_is_generated_under_limit_without_truncation(self):
         result = run_node(
             r"""
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -35,7 +35,7 @@ globalThis.fetch = async (_url, options = {}) => {
   return {
     ok: true,
     json: async () => ({ choices: [{ message: { content: JSON.stringify({
-      copy: '文'.repeat(1100) + '\n#批量图文 #标题生文案'
+      copy: '文'.repeat(850) + '完整收尾。\n#批量图文 #标题生文案'
     }) } }] }),
     text: async () => ''
   };
@@ -48,15 +48,54 @@ const { AI } = await import('./js/api/ai.js?v=copy-limit-test');
 const out = await AI.generateImageCopyFromTitle({ title:'批量图文如何稳定生成', account:{} });
 console.log(JSON.stringify({
   length: [...out.copy].length,
+  endsComplete: out.copy.includes('完整收尾。'),
+  requestCount: requests.length,
   tags: [...out.copy.matchAll(/#[^\s#]+/g)].map(match => match[0]),
-  promptHasCombinedLimit: String(requests[0]?.messages?.[0]?.content || '').includes('正文和标签合计不得超过 1000 个 Unicode 字符')
+  promptHasGenerationBudget: String(requests[0]?.messages?.[0]?.content || '').includes('900 个 Unicode 字符以内')
 }));
 """
         )
-        self.assertLessEqual(result["length"], 1000)
+        self.assertLess(result["length"], 1000)
+        self.assertTrue(result["endsComplete"])
+        self.assertEqual(1, result["requestCount"])
         self.assertGreaterEqual(len(result["tags"]), 4)
         self.assertIn("#批量图文", result["tags"])
-        self.assertTrue(result["promptHasCombinedLimit"])
+        self.assertTrue(result["promptHasGenerationBudget"])
+
+    def test_title_copy_over_limit_fails_without_truncation_or_rewrite(self):
+        result = run_node(
+            r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+let requestCount = 0;
+globalThis.fetch = async () => {
+  requestCount += 1;
+  return {
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: JSON.stringify({
+      copy: '文'.repeat(1100) + '不可丢失的完整末句。\\n#批量图文 #标题生文案'
+    }) } }] }),
+    text: async () => ''
+  };
+};
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=copy-no-truncate-test');
+let error = '';
+try {
+  await AI.generateImageCopyFromTitle({ title:'批量图文如何稳定生成', account:{} });
+} catch (err) {
+  error = err.message || String(err);
+}
+console.log(JSON.stringify({ error, requestCount }));
+"""
+        )
+        self.assertIn("超过 1000 字", result["error"])
+        self.assertEqual(1, result["requestCount"])
 
     def test_single_image_title_copy_removes_duplicate_title_and_markdown(self):
         result = run_node(

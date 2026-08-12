@@ -26,6 +26,7 @@ import {
 } from "./canvasPersistence";
 import {
   cancelCanvasProjectPut,
+  flushCanvasProjectPut,
   flushPendingCanvasProjectDeletes,
   getCanvasProject,
   getCanvasProjectIndex,
@@ -36,6 +37,7 @@ import {
   type CanvasProjectPutPayload,
 } from "./canvasSync";
 import { parseSize } from "./sizing";
+import { IS_PLATFORM_EMBED } from "./runtime";
 import { uid } from "./util";
 import type {
   ActiveReference,
@@ -154,6 +156,8 @@ interface AppState {
   syncCanvasProjectIndex: () => Promise<void>;
   /** Immediately commit the latest result to the verified local checkpoint. */
   flushCanvasProjectLocal: (projectId: string) => Promise<void>;
+  /** Commit the verified checkpoint to the server before creating a paid job. */
+  flushCanvasProjectServer: (projectId: string) => Promise<void>;
   /** Retry a transient server write without changing or replacing local content. */
   retryCanvasProjectSync: (projectId: string) => void;
 
@@ -476,6 +480,74 @@ async function flushCanvasProjectLocalCheckpoint(
   }));
 }
 
+async function flushCanvasProjectServerCheckpoint(
+  projectId: string,
+  get: () => AppState,
+): Promise<void> {
+  await flushCanvasProjectLocalCheckpoint(projectId, get);
+  if (!IS_PLATFORM_EMBED) return;
+  if (serverTombstonedProjects.has(projectId)) {
+    throw new Error("画布项目已删除，无法提交生成任务");
+  }
+  if (conflictedCanvasProjects.has(projectId)) {
+    throw new Error("画布存在待处理的服务器冲突，请先选择要保留的版本");
+  }
+  if (pendingLegacyServerMigrationIds().includes(projectId)) {
+    throw new Error("画布正在完成历史版本同步，请稍后再生成");
+  }
+
+  let sentGeneration = 0;
+  const flushed = await flushCanvasProjectPut(projectId, () => {
+    sentGeneration = canvasMutationGeneration.get(projectId) || 0;
+    const current = get();
+    const clientUpdatedAt = Math.max(
+      Date.now(),
+      Number(current.localUpdatedAtByProject[projectId] || 0),
+      Number(current.projects.find((project) => project.id === projectId)?.updatedAt || 0),
+    );
+    return canvasProjectSnapshot(current, projectId, clientUpdatedAt);
+  });
+  if (!flushed) throw new Error("画布项目服务器同步未完成");
+
+  const revision = Number(flushed.result.project.revision || 0);
+  if (revision > 0) {
+    useStore.setState((latest) => ({
+      serverRevisionByProject: {
+        ...latest.serverRevisionByProject,
+        [projectId]: revision,
+      },
+    }));
+  }
+  if ((canvasMutationGeneration.get(projectId) || 0) !== sentGeneration) return;
+
+  await writeCanvasProjectVerified(projectId, flushed.result.state, {
+    allowEmpty: true,
+    confirmEmpty: explicitlyEmptyCanvasProjects.has(projectId),
+    source: "server",
+    dirty: false,
+    conflicted: false,
+    clientUpdatedAt: flushed.sent.clientUpdatedAt,
+    serverRevision: revision || undefined,
+  });
+  if ((canvasMutationGeneration.get(projectId) || 0) !== sentGeneration) return;
+  suppressedCanvasProjects.add(projectId);
+  try {
+    useStore.setState((latest) => ({
+      projects: latest.projects.map((project) =>
+        project.id === projectId ? mergeServerProject(project, flushed.result.project) : project,
+      ),
+      projectDirtyByProject: { ...latest.projectDirtyByProject, [projectId]: false },
+      localUpdatedAtByProject: {
+        ...latest.localUpdatedAtByProject,
+        [projectId]: flushed.sent.clientUpdatedAt,
+      },
+      projectSyncError: { ...latest.projectSyncError, [projectId]: "" },
+    }));
+  } finally {
+    suppressedCanvasProjects.delete(projectId);
+  }
+}
+
 function installRecoveredProject(
   projectId: string,
   payload: CanvasProjectState,
@@ -642,6 +714,9 @@ export const useStore = create<AppState>()(
 
       flushCanvasProjectLocal: (projectId) =>
         flushCanvasProjectLocalCheckpoint(projectId, get),
+
+      flushCanvasProjectServer: (projectId) =>
+        flushCanvasProjectServerCheckpoint(projectId, get),
 
       retryCanvasProjectSync: (projectId) => {
         if (conflictedCanvasProjects.has(projectId)) return;
