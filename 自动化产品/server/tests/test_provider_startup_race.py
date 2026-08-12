@@ -42,6 +42,10 @@ class ProviderStartupRaceTests(unittest.TestCase):
             'IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)',
             main_source,
         )
+        self.assertIn(
+            'IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)',
+            main_source,
+        )
         self.assertIn('"providerCalled": False', main_source)
 
 

@@ -404,6 +404,7 @@ console.log(JSON.stringify({{
         self.assertIn("Explicit targets take priority", planner)
         self.assertIn("ALL_REFERENCE_WORDS", planner)
         self.assertIn("planReferenceEdits(brief, references.length)", actions)
+        self.assertIn("requestedOutputCount > 1", actions)
         self.assertIn("Promise.all(", actions)
         self.assertIn("callTransform({", actions)
         self.assertIn("targetedReferenceIndex", actions)
@@ -487,11 +488,23 @@ console.log(JSON.stringify({{
             for round_index in range(5)
             for case in base_cases
         ]
+        generation_cases = [
+            {
+                "brief": "设计10张完全不同风格的海报，图1调整为Logo参考，图2修改为产品参考，图3放二维码",
+                "count": 4,
+            },
+            {
+                "brief": "制作5张海报，标题参考图1，背景使用图2，小熊参考图3",
+                "count": 3,
+            },
+        ]
         script = (
             runnable
             + "\nconst cases = "
             + json.dumps(cases, ensure_ascii=False)
-            + ";\nconsole.log(JSON.stringify(cases.map(item => ({ ...item, plan: planReferenceEdits(item.brief, item.count) }))));\n"
+            + ";\nconst generationCases = "
+            + json.dumps(generation_cases, ensure_ascii=False)
+            + ";\nconsole.log(JSON.stringify({ rounds: cases.map(item => ({ ...item, plan: planReferenceEdits(item.brief, item.count) })), generationPlans: generationCases.map(item => ({ ...item, plan: planReferenceEdits(item.brief, item.count) })) }));\n"
         )
         result = subprocess.run(
             ["node", "--input-type=module", "-e", script],
@@ -500,13 +513,17 @@ console.log(JSON.stringify({{
             capture_output=True,
             check=True,
         )
-        rounds = json.loads(result.stdout)
+        payload = json.loads(result.stdout)
+        rounds = payload["rounds"]
         self.assertEqual(len(rounds), 55)
         for round_ in rounds:
             self.assertIsNotNone(round_["plan"], round_["brief"])
             self.assertEqual(round_["plan"]["targetIndexes"], round_["targets"], round_["brief"])
             expected_mode = "parallel" if len(round_["targets"]) > 1 else "single"
             self.assertEqual(round_["plan"]["mode"], expected_mode, round_["brief"])
+        # The raw edit planner can still see edit words in a creation brief;
+        # dispatch must let parseCount()>1 bypass these plans.
+        self.assertTrue(any(row["plan"] is not None for row in payload["generationPlans"]))
 
     def test_static_canvas_links_keep_base_path_and_embed_query(self):
         runtime = (

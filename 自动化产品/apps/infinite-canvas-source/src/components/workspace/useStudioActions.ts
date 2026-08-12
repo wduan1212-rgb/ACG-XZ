@@ -107,10 +107,13 @@ export function useStudioActions(projectId: string) {
         const done = linked.filter((item) =>
           item && isImageItem(item) && !!item.assetUrl && !("loading" in item && item.loading),
         );
+        const baseText = String(message.text || "图片生成完成")
+          .replace(/\n后台任务已恢复 \d+\/\d+ 张。/g, "")
+          .trim();
         updateMessage(projectId, message.id, {
           status: done.length === linked.length ? "done" : done.length ? "partial" : "error",
           text: done.length
-            ? `${message.text || "图片生成完成"}\n后台任务已恢复 ${done.length}/${linked.length} 张。`
+            ? `${baseText}\n后台任务已恢复 ${done.length}/${linked.length} 张。`
             : "后台图片生成未完成，请重试失败项。",
         });
       }
@@ -156,7 +159,10 @@ export function useStudioActions(projectId: string) {
             backgroundJob: true,
           },
         } as Partial<CanvasItem>);
-        await flushCanvasProjectLocal(projectId);
+        // The provider result is already durable on the server. A temporary
+        // IndexedDB/checkpoint failure must never relabel that real image as a
+        // generation failure; the store subscription will retry persistence.
+        await flushCanvasProjectLocal(projectId).catch(() => undefined);
         recoveryRetry.delete(item.jobId);
         settleLinkedState(item.id);
       } catch (error) {
@@ -182,13 +188,28 @@ export function useStudioActions(projectId: string) {
           updateItem(projectId, item.id, {
             loading: true,
             generationStatus: "running",
-            label: "连接暂时中断，后台任务仍在继续",
+            label: "后台排队中，稍后自动更新",
             error: undefined,
           } as Partial<CanvasItem>);
           await flushCanvasProjectLocal(projectId).catch(() => undefined);
           return;
         }
         recoveryRetry.delete(item.jobId);
+        const latest = (useStore.getState().itemsByProject[projectId] ?? [])
+          .find((candidate) => candidate.id === item.id);
+        if (latest && isImageItem(latest) && latest.assetUrl) {
+          updateItem(projectId, item.id, {
+            loading: false,
+            generationStatus: "done",
+            label: /(?:生成|编辑)失败|任务已中断/.test(String(latest.label || ""))
+              ? `海报 ${String(latest.type === "generation" ? latest.queuePosition || 1 : 1).padStart(2, "0")}`
+              : latest.label,
+            error: undefined,
+          } as Partial<CanvasItem>);
+          await flushCanvasProjectLocal(projectId).catch(() => undefined);
+          settleLinkedState(item.id);
+          return;
+        }
         const message = canvasRequestUserMessage(error);
         updateItem(projectId, item.id, {
           loading: false,
@@ -325,7 +346,14 @@ export function useStudioActions(projectId: string) {
           referenceImageById.set(r.itemId, u);
         }
       }
-      const referenceEditPlan = planReferenceEdits(brief, references.length);
+      const requestedOutputCount = parseCount(brief);
+      // Explicit creation quantities are authoritative. A brief such as
+      // “设计 10 张海报，图 1 放 Logo、图 2 放产品” uses the attached
+      // images as references; it must not be misclassified as editing the
+      // four selected references and silently shrink 10 outputs to four.
+      const referenceEditPlan = requestedOutputCount > 1
+        ? null
+        : planReferenceEdits(brief, references.length);
 
       addMessage(projectId, {
         id: uid("msg"),
@@ -491,8 +519,8 @@ export function useStudioActions(projectId: string) {
             loading: true,
             generationStatus: "running",
             label: isCanvasConnectivityError(result.reason)
-              ? "连接暂时中断，后台编辑仍在继续"
-              : "服务器后台编辑中",
+              ? "后台排队中，稍后自动更新"
+              : "后台处理中，稍后自动更新",
             error: undefined,
           } as Partial<CanvasItem> : {
             loading: false,
@@ -704,7 +732,9 @@ export function useStudioActions(projectId: string) {
                 backgroundJob: true,
               },
             } as Partial<CanvasItem>);
-            await flushCanvasProjectLocal(projectId);
+            // A verified provider result remains successful even if the local
+            // checkpoint is momentarily busy; persistence retries separately.
+            await flushCanvasProjectLocal(projectId).catch(() => undefined);
             return id;
           }),
           {
@@ -723,7 +753,7 @@ export function useStudioActions(projectId: string) {
             },
           },
         );
-        const done = results.flatMap((result) =>
+        let done = results.flatMap((result) =>
           result.status === "fulfilled" ? [result.value] : [],
         );
         const failures: string[] = [];
@@ -733,15 +763,28 @@ export function useStudioActions(projectId: string) {
           const continuingInBackground = isCanvasRequestCancelled(result.reason)
             || isCanvasConnectivityError(result.reason);
           const message = continuingInBackground
-            ? "服务器继续生成中，重新进入本项目后会自动恢复。"
+            ? "任务已进入后台队列，稍后会自动更新进度。"
             : canvasRequestUserMessage(result.reason);
+          const latest = (useStore.getState().itemsByProject[projectId] ?? [])
+            .find((candidate) => candidate.id === ids[index]);
+          if (latest && isImageItem(latest) && latest.assetUrl) {
+            updateItem(projectId, ids[index], {
+              loading: false,
+              generationStatus: "done",
+              label: /(?:生成|编辑)失败|任务已中断/.test(String(latest.label || ""))
+                ? `海报 ${String(latest.type === "generation" ? latest.queuePosition || index + 1 : index + 1).padStart(2, "0")}`
+                : latest.label,
+              error: undefined,
+            } as Partial<CanvasItem>);
+            return;
+          }
           (continuingInBackground ? continuing : failures).push(message);
           updateItem(projectId, ids[index], continuingInBackground ? {
             loading: true,
             generationStatus: "running",
             label: isCanvasConnectivityError(result.reason)
-              ? "连接暂时中断，后台生成仍在继续"
-              : "服务器后台生成中",
+              ? "后台排队中，稍后自动更新"
+              : "后台处理中，稍后自动更新",
             error: undefined,
           } as Partial<CanvasItem> : {
             loading: false,
@@ -750,11 +793,16 @@ export function useStudioActions(projectId: string) {
             error: message,
           } as Partial<CanvasItem>);
         });
+        done = ids.filter((id) => {
+          const item = (useStore.getState().itemsByProject[projectId] ?? [])
+            .find((candidate) => candidate.id === id);
+          return !!item && isImageItem(item) && !!item.assetUrl && !("loading" in item && item.loading);
+        });
         if (failures.length || continuing.length) await flushCanvasProjectLocal(projectId);
 
         updateMessage(projectId, agentMsgId, {
           text: continuing.length > 0
-            ? `${ar.caption}\n${done.length ? `已完成 ${done.length}/${count} 张；` : ""}其余已转入服务器后台生成，重新进入本项目后会自动恢复。`
+            ? `${ar.caption}\n${done.length ? `已完成 ${done.length}/${count} 张；` : ""}其余已进入后台队列，稍后会自动更新进度。`
             : done.length === count
             ? ar.caption
             : done.length > 0
@@ -783,7 +831,7 @@ export function useStudioActions(projectId: string) {
             error: failures[0],
             resultItemIds: ids,
             label: continuing.length > 0
-              ? `后台生成中 ${done.length}/${count} 张 · ${size}`
+              ? `后台排队中 ${done.length}/${count} 张 · ${size}`
               : done.length === count
               ? `已生成 ${done.length} 张 · ${size}`
               : `部分完成 ${done.length}/${count} 张 · ${size}`,
@@ -797,7 +845,7 @@ export function useStudioActions(projectId: string) {
             error: failures[0],
             resultItemIds: ids,
             label: continuing.length > 0
-              ? `服务器后台生成中 · ${size}`
+              ? `后台排队中 · ${size}`
               : `生成失败 · ${size}`,
           });
           if (failures.length) recordFailure(projectId);

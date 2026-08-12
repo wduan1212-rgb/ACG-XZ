@@ -73,6 +73,29 @@ export function recoverInterruptedCanvasState(
       .map((item) => item.id),
   );
   const items = state.items.map((item) => {
+    // Historical recovery could successfully attach a durable server blob and
+    // then fail while saving the local checkpoint. Never let that secondary
+    // failure override the authoritative media result on the card.
+    if (
+      (item.type === "generation" || item.type === "enhanced")
+      && !!item.assetUrl
+      && (
+        item.generationStatus === "failed"
+        || item.generationStatus === "interrupted"
+        || /(?:生成|编辑)失败|任务已中断/.test(String(item.label || ""))
+      )
+    ) {
+      changed = true;
+      return {
+        ...item,
+        loading: false,
+        generationStatus: "done" as const,
+        label: item.type === "generation"
+          ? `海报 ${String(item.queuePosition || 1).padStart(2, "0")}`
+          : "高清结果",
+        error: undefined,
+      };
+    }
     if (
       (item.type !== "generation" && item.type !== "enhanced")
       || !item.loading

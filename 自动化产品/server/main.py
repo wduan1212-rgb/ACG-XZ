@@ -178,7 +178,10 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # running loop.  Python 3.9 binds Semaphore/Condition during construction, so
 # module-level instances make a clean import fail after another loop was closed
 # (and can bind production work to the wrong bootstrap loop).
-IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3)
+# Keep enough shared throughput for batch/canvas work without sending three
+# large multi-reference payloads to the current upstream at once.  A caller
+# may still override this operational ceiling explicitly.
+IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)
 IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)
 IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
 IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS = _positive_env_int(

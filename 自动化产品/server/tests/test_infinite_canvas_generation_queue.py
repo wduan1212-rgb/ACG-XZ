@@ -237,6 +237,7 @@ def test_hydration_repairs_old_loading_without_touching_mixed_results():
             {{ ...base, id: "background-loading", type: "generation", assetUrl: "", jobId: "server-job", createdAt: old, loading: true, provenance: {{ backgroundJob: true }} }},
             {{ ...base, id: "old-done-image", type: "generation", assetUrl: "/api/custom-canvas/blobs/" + "a".repeat(64), jobId: "b", createdAt: old, loading: true }},
             {{ ...base, id: "mixed-done", type: "generation", assetUrl: "/api/custom-canvas/blobs/" + "b".repeat(64), jobId: "c", createdAt: old, loading: false, generationStatus: "done" }},
+            {{ ...base, id: "mislabelled-success", type: "generation", assetUrl: "/api/custom-canvas/blobs/" + "c".repeat(64), jobId: "e", createdAt: old, loading: false, generationStatus: "failed", label: "生成失败，可重试", queuePosition: 7, error: "checkpoint conflict" }},
             {{ ...base, id: "fresh-loading", type: "generation", assetUrl: "", jobId: "d", createdAt: fresh, loading: true }},
           ],
           messages: [
@@ -256,7 +257,10 @@ def test_hydration_repairs_old_loading_without_touching_mixed_results():
         assert.equal(byId["old-done-image"].generationStatus, "done");
         assert.equal(byId["old-done-image"].assetUrl, state.items[2].assetUrl);
         assert.strictEqual(byId["mixed-done"], state.items[3]);
-        assert.strictEqual(byId["fresh-loading"], state.items[4]);
+        assert.equal(byId["mislabelled-success"].generationStatus, "done");
+        assert.equal(byId["mislabelled-success"].label, "海报 07");
+        assert.equal(byId["mislabelled-success"].error, undefined);
+        assert.strictEqual(byId["fresh-loading"], state.items[5]);
         assert.equal(recovered.state.messages[0].status, "error");
         assert.equal(recovered.state.messages[0].text, "任务已中断，可重试");
         assert.strictEqual(recovered.state.messages[1], state.messages[1]);
@@ -288,9 +292,9 @@ def test_generation_source_contract_persists_progressive_results():
     assert "sourceProjectId: projectId" in source
     assert "backgroundJob: true" in source
     assert "waitCanvasGenerationJob" in source
-    assert "服务器继续生成中" in source
+    assert "任务已进入后台队列" in source
     assert "isCanvasConnectivityError" in source
-    assert "连接暂时中断，后台任务仍在继续" in source
+    assert "后台排队中，稍后自动更新" in source
     assert "Date.now() - Number(item.createdAt || 0) < 120_000" in source
     assert "retryDelays = [2_000, 5_000, 10_000, 20_000, 30_000]" in source
     assert 'window.addEventListener("online", resumeAfterReconnect)' in source
@@ -302,7 +306,9 @@ def test_generation_source_contract_persists_progressive_results():
     assert "const flushCanvasProjectServer = useStore((s) => s.flushCanvasProjectServer)" in source
     assert source.count("limit: CANVAS_IMAGE_CONCURRENCY") == 2
     queue_source = (CANVAS_ROOT / "src" / "lib" / "concurrencyQueue.ts").read_text(encoding="utf-8")
-    assert "export const CANVAS_IMAGE_CONCURRENCY = 2" in queue_source
+    assert "export const CANVAS_IMAGE_CONCURRENCY = 1" in queue_source
+    assert "requestedOutputCount > 1" in source
+    assert "await flushCanvasProjectLocal(projectId).catch(() => undefined)" in source
     assert "await flushCanvasProjectLocal(projectId)" in source
     assert 'generationStatus: "running"' in source
     assert "new CanvasRequestLifecycle(projectId)" in source

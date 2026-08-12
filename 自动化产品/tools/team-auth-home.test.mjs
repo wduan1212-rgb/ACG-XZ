@@ -397,7 +397,7 @@ test("all runtime modules share the v141 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260812-v1427-generation-startup-sync-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260812-v1427-generation-startup-sync-1"/);
+  assert.match(indexHtml, /20260812-v1428-canvas-batch-stability-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260812-v1428-canvas-batch-stability-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

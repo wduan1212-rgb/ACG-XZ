@@ -1,5 +1,5 @@
 const mounted = new WeakMap();
-const CUSTOM_VIDEO_FRAME_RELEASE = "20260812-v1427-generation-startup-sync-1";
+const CUSTOM_VIDEO_FRAME_RELEASE = "20260812-v1428-canvas-batch-stability-1";
 
 function normalizedOutput(raw) {
   const source = raw && typeof raw === "object" ? raw : {};

@@ -2,7 +2,7 @@ import { community } from "../core/remote.js";
 import { currentMember } from "../core/store.js";
 import { esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260812-v1427-generation-startup-sync-1";
+import { openModal, toast } from "../ui/components.js?v=20260812-v1428-canvas-batch-stability-1";
 
 const CATEGORIES = ["视频灵感", "视觉设计"];
 const SAFE_MEDIA_PREFIXES = [
