@@ -109,7 +109,7 @@ def load_environment(app_dir: Path | None = None) -> tuple[Path, ...]:
     # A checked-out local env may itself declare production mode. Load it
     # before deciding whether Git worktree fallback is allowed.
     _load_environment_file(local_path)
-    if runtime_mode() not in {"production", "invalid"}:
+    if runtime_mode() == "local":
         fallback = _local_git_environment_candidate(base)
         if fallback is not None:
             candidates.append(fallback)

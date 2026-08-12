@@ -480,6 +480,7 @@ console.log(JSON.stringify({{
             {"brief": "图1和图3都编辑成黑金风格", "count": 3, "targets": [0, 2]},
             {"brief": "统一图2的配色为蓝色", "count": 2, "targets": [1]},
             {"brief": "把图1、图2都改为胶片风格", "count": 2, "targets": [0, 1]},
+            {"brief": "把右上角图片换成第二个图片", "count": 2, "targets": [0]},
         ]
         cases = [
             {**case, "brief": f"{case['brief']}，第{round_index + 1}轮检查"}
@@ -500,7 +501,7 @@ console.log(JSON.stringify({{
             check=True,
         )
         rounds = json.loads(result.stdout)
-        self.assertEqual(len(rounds), 50)
+        self.assertEqual(len(rounds), 55)
         for round_ in rounds:
             self.assertIsNotNone(round_["plan"], round_["brief"])
             self.assertEqual(round_["plan"]["targetIndexes"], round_["targets"], round_["brief"])

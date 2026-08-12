@@ -285,10 +285,13 @@ class BatchPollStabilityTest(unittest.TestCase):
               phase:"review", createdAt:Date.now() - 60_000,
               productionIds:["history-review", "history-failed"]
             }];
+            state.assets = [{
+              id:"asset-1", accountId:"account-one", type:"图片", delivered:false, fileMissing:false
+            }];
             state.productions = [
-              { id:"empty", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[] } } },
-              { id:"prompted", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"图卡提示词", assetId:null }] } } },
-              { id:"complete", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"已完成", assetId:"asset-1" }] } } },
+              { id:"empty", accountId:"account-one", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[] } } },
+              { id:"prompted", accountId:"account-one", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"图卡提示词", assetId:null }] } } },
+              { id:"complete", accountId:"account-one", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"已完成", assetId:"asset-1" }] } } },
               { id:"provider", ownerId:"creator-one", mode:"视频", stage:"workshop", stageStatus:"running", artifacts:{} },
               { id:"stale", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[] } } },
               { id:"history-review", ownerId:"creator-one", mode:"图文", stage:"review", stageStatus:"pending", artifacts:{} },
@@ -321,6 +324,75 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn("刷新后正在接续起草", result["thinking"]["step"])
         self.assertEqual(result["thinking"]["total"], 4)
         self.assertEqual(result["thinking"]["batchIds"], ["batch-refresh"])
+
+    def test_batch_media_validation_rejects_cross_account_assets_before_publish(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { productionImageAssetIssues } = await import("./js/domain/delivery.js");
+            state.assets = [
+              { id:"asset-right", accountId:"account-a", type:"图片", delivered:false, fileMissing:false },
+              { id:"asset-other", accountId:"account-b", type:"图片", delivered:false, fileMissing:false },
+            ];
+            const base = { mode:"图文", accountId:"account-a", artifacts:{ images:{ items:[] } } };
+            const valid = productionImageAssetIssues({
+              ...base, artifacts:{ images:{ items:[{ assetId:"asset-right" }] } }
+            });
+            const invalid = productionImageAssetIssues({
+              ...base, artifacts:{ images:{ items:[{ assetId:"asset-right" }, { assetId:"asset-other" }] } }
+            });
+            console.log(JSON.stringify({ valid, invalid }));
+            """
+        )
+        self.assertEqual(result["valid"], [])
+        self.assertEqual(result["invalid"], [
+            {"index": 1, "assetId": "asset-other", "reason": "wrong-account"}
+        ])
+
+    def test_batch_hydration_waits_for_assets_without_redrafting_completed_images(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { classifyHydratedBatchRecovery } = await import("./js/agent/orchestrator.js");
+            state.assets = [];
+            state.productions = [{
+              id:"complete-before-assets", accountId:"account-a", mode:"图文",
+              stage:"images", stageStatus:"running",
+              artifacts:{ images:{ items:[{ prompt:"已生成", assetId:"asset-later" }] } }
+            }];
+            const batch = { id:"batch", createdAt:Date.now(), productionIds:["complete-before-assets"] };
+            const before = classifyHydratedBatchRecovery(batch);
+            state.assets = [{
+              id:"asset-later", accountId:"account-b", type:"图片", delivered:false, fileMissing:false
+            }];
+            const after = classifyHydratedBatchRecovery(batch);
+            console.log(JSON.stringify({
+              beforeSettle:before.settle.map(item => item.id),
+              beforeDraft:before.draft.map(item => item.id),
+              afterInvalid:after.invalid.map(item => item.id),
+            }));
+            """
+        )
+        self.assertEqual(result["beforeSettle"], ["complete-before-assets"])
+        self.assertEqual(result["beforeDraft"], [])
+        self.assertEqual(result["afterInvalid"], ["complete-before-assets"])
+
+    def test_batch_generated_assets_are_unique_and_hash_dedup_is_account_scoped(self):
+        assets = (APP_DIR / "js/domain/assets.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        self.assertIn('String(a.accountId || "") === String(accountId || "")', assets)
+        generated = orchestrator.index("`\u7ad9\u5185\u7b14\u8bb0\u56fe${String(i + 1).padStart")
+        force_new = orchestrator.index("forceNew: true", generated)
+        self.assertGreater(force_new, generated)
+        self.assertLess(force_new - generated, 400)
 
     def test_polling_sources_do_not_full_save_or_full_render(self):
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")
@@ -411,6 +483,11 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn("|| Number(error?.status || 0) === 409", providers)
         self.assertIn('await imageOperationStatus(ref)', providers)
         self.assertIn('deferred.outcomeUnknown = true', providers)
+        self.assertIn('retryable.code = "PROVIDER_RETRY_REQUIRED"', providers)
+        self.assertIn('retryable.newOperationRequired = true', providers)
+        self.assertIn('status: "explicit-retry-required"', orchestrator)
+        self.assertIn('prepareExplicitBatchImageRetry(p)', orchestrator)
+        self.assertIn('RESETTABLE_BATCH_MEDIA_ISSUES.has(issue.reason)', orchestrator)
 
     def test_review_transition_clears_stale_production_and_item_errors(self):
         result = self.run_node(

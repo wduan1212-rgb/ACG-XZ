@@ -4,24 +4,24 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260811-v1424-creative-reference-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260812-v1425-batch-media-recovery-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260811-v1424-creative-reference-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260811-v1424-creative-reference-1";
+} from "./orchestrator.js?v=20260812-v1425-batch-media-recovery-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260812-v1425-batch-media-recovery-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260811-v1424-creative-reference-1";
-import { deliver } from "../domain/delivery.js?v=20260811-v1424-creative-reference-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260812-v1425-batch-media-recovery-1";
+import { deliver } from "../domain/delivery.js?v=20260812-v1425-batch-media-recovery-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { accountPublishAvailable, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260811-v1424-creative-reference-1";
+import { accountPublishAvailable, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260812-v1425-batch-media-recovery-1";
 import { qianfanTopicIdeas } from "../core/remote.js";
-import { validatePublishText } from "../domain/publishRules.js?v=20260811-v1424-creative-reference-1";
+import { validatePublishText } from "../domain/publishRules.js?v=20260812-v1425-batch-media-recovery-1";
 
 let mounted = false;
 let rootEl = null;
@@ -620,7 +620,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260811-v1424-creative-reference-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260812-v1425-batch-media-recovery-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -1071,8 +1071,11 @@ function wire(root) {
         const r = await publishModal({ title: `定稿并发布本批 ${cnt} 条内容`, okText: "全部发布" });
         if (r != null) {
           try {
-            const n = await deliverAll(batch, r);
-            toast(`已发布 ${n} 条入供应商端${r.planDate ? ` · 计划 ${r.planDate}` : ""}`);
+            const result = await deliverAll(batch, r);
+            const suffix = result.failed.length
+              ? `；${result.failed.length} 条未发布，可按提示修复后重试`
+              : "";
+            toast(`已发布 ${result.published} 条入供应商端${r.planDate ? ` · 计划 ${r.planDate}` : ""}${suffix}`, result.failed.length ? "error" : "");
           } catch (error) {
             toast(error?.message || "批量发布失败，请重试", "error");
           }

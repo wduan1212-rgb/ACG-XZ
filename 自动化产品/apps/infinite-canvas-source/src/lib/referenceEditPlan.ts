@@ -46,8 +46,12 @@ export function planReferenceEdits(brief: string, referenceCount: number): Refer
   if (!text || !EDIT_WORDS.test(text)) return null;
 
   const targets = new Set<number>();
-  const imagePattern = /(?:第)?(?:图|图片)\s*(\d+|[一二两三四五六七八九十])(?:张|幅)?/g;
-  for (const match of text.matchAll(imagePattern)) {
+  const donors = new Set<number>();
+  const imagePatterns = [
+    /(?:第)?(?:图|图片)\s*(\d+|[一二两三四五六七八九十])(?:张|幅)?/g,
+    /第(\d+|[一二两三四五六七八九十])(?:个|张|幅)?(?:参考)?(?:图|图片)/g,
+  ];
+  for (const imagePattern of imagePatterns) for (const match of text.matchAll(imagePattern)) {
     const position = match.index ?? 0;
     const before = text.slice(Math.max(0, position - 10), position);
     const after = text.slice(position + match[0].length, position + match[0].length + 26);
@@ -55,14 +59,24 @@ export function planReferenceEdits(brief: string, referenceCount: number): Refer
     const isTargetAfter = EDIT_WORDS.test(after);
     // "统一图2" is an imperative target; "调成图1" is a donor reference.
     const isTargetBefore = /(?:统一|修改|编辑|调整|改|换|替换|重绘|重做|优化|润色|转换)$/.test(before);
-    if (!isStyleDonor && (isTargetAfter || isTargetBefore)) {
-      addIndex(targets, chineseNumber(match[1]), referenceCount);
-    }
+    const number = chineseNumber(match[1]);
+    if (isStyleDonor) addIndex(donors, number, referenceCount);
+    else if (isTargetAfter || isTargetBefore) addIndex(targets, number, referenceCount);
   }
 
   if (targets.size > 0) {
     const targetIndexes = [...targets].sort((a, b) => a - b);
     return { targetIndexes, mode: targetIndexes.length > 1 ? "parallel" : "single" };
+  }
+
+  // “把右上角图片换成第二个图片” names the donor but describes the
+  // editable region inside the first attached picture.  Treat the sole
+  // non-donor reference as the target instead of falling through to a new
+  // multi-reference generation request.
+  if (donors.size > 0) {
+    const candidates = Array.from({ length: referenceCount }, (_, index) => index)
+      .filter(index => !donors.has(index));
+    if (candidates.length === 1) return { targetIndexes: candidates, mode: "single" };
   }
 
   if (referenceCount === 1) return { targetIndexes: [0], mode: "single" };

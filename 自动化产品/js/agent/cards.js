@@ -4,9 +4,9 @@ import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, isAccountDisabled } from "../domain/accounts.js";
-import { accountPublishQuota } from "../domain/productionQuota.js?v=20260811-v1424-creative-reference-1";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260811-v1424-creative-reference-1";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260811-v1424-creative-reference-1";
+import { accountPublishQuota } from "../domain/productionQuota.js?v=20260812-v1425-batch-media-recovery-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260812-v1425-batch-media-recovery-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260812-v1425-batch-media-recovery-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;

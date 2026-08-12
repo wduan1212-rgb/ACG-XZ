@@ -1963,13 +1963,52 @@ def _compact_image_ref_files(ref_files: List[Tuple[str, bytes, str]]) -> Tuple[L
     compacted = []
     changed = 0
     for name, blob, mime in active:
+        blob, mime, did_normalize = _normalize_small_image_reference(blob, mime)
         next_blob, next_mime, did_compact = _compact_image_reference(blob, mime, per_ref_budget)
         compacted.append((name, next_blob, next_mime))
-        changed += int(did_compact)
+        changed += int(did_normalize or did_compact)
     total_size = sum(_image_ref_data_url_size(blob, mime) for _, blob, mime in compacted)
     if total_size > IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES:
         raise HTTPException(413, "参考图总大小超过图片模型请求上限；请减少参考图数量后重试")
     return compacted, changed
+
+
+def _normalize_small_image_reference(
+    blob: bytes,
+    mime: str,
+    *,
+    minimum_short_side: int = 256,
+) -> Tuple[bytes, str, bool]:
+    """Upscale tiny logos before MaaS validation without changing their aspect.
+
+    TokenHub accepts ordinary screenshots but rejects very small logo strips as
+    invalid request parameters.  Padding would invent a composition, so keep
+    the original aspect ratio and only raise the transport resolution.  The
+    reference remains an input; this never changes a user's stored source file.
+    """
+    if not Image or not blob:
+        return blob, mime, False
+    try:
+        with Image.open(io.BytesIO(blob)) as opened:
+            width, height = opened.size
+            shortest = min(width, height)
+            if shortest >= minimum_short_side:
+                return blob, mime, False
+            scale = minimum_short_side / max(1, shortest)
+            target = (
+                max(minimum_short_side, int(round(width * scale))),
+                max(minimum_short_side, int(round(height * scale))),
+            )
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            source = opened.convert("RGBA")
+            resized = source.resize(target, resampling)
+            background = Image.new("RGB", target, "white")
+            background.paste(resized, mask=resized.getchannel("A"))
+        output = io.BytesIO()
+        background.save(output, format="JPEG", quality=90, optimize=True)
+        return output.getvalue(), "image/jpeg", True
+    except Exception:
+        return blob, mime, False
 
 
 @app.get("/api/llm/config")
@@ -10135,7 +10174,13 @@ _CUSTOM_CANVAS_GENERATION_TASKS = {}
 
 def _custom_canvas_background_error(exc):
     if isinstance(exc, HTTPException):
-        return str(exc.detail or "图片生成失败")[:600]
+        detail = exc.detail
+        if isinstance(detail, dict):
+            code = str(detail.get("code") or "")
+            if code == "IMAGE_PROVIDER_RESULT_UNKNOWN":
+                return "图片上游连接超时，本次结果未能返回；可重试失败项，已成功内容不会重复生成。"
+            return str(detail.get("message") or "图片生成失败")[:600]
+        return str(detail or "图片生成失败")[:600]
     if isinstance(exc, _ModelUsageGateFailure):
         return str(exc.detail or "图片生成暂不可用")[:600]
     if isinstance(exc, asyncio.CancelledError):

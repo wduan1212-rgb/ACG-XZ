@@ -68,6 +68,43 @@ class ImageMaasRoutingTest(unittest.TestCase):
             self.assertEqual(mime, "image/jpeg")
             self.assertLessEqual(main._image_ref_data_url_size(blob, mime), main.IMAGE_REFERENCE_MAX_DATA_URL_BYTES)
 
+    def test_tiny_reference_logos_are_upscaled_for_provider_transport_only(self):
+        if main.Image is None:
+            self.skipTest("Pillow is required for tiny-reference normalization")
+        image = main.Image.new("RGBA", (174, 60), (255, 255, 255, 0))
+        source = io.BytesIO()
+        image.save(source, format="PNG")
+
+        blob, mime, changed = main._normalize_small_image_reference(
+            source.getvalue(),
+            "image/png",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(mime, "image/jpeg")
+        with main.Image.open(io.BytesIO(blob)) as normalized:
+            self.assertGreaterEqual(min(normalized.size), 256)
+            self.assertAlmostEqual(
+                normalized.size[0] / normalized.size[1],
+                174 / 60,
+                delta=0.02,
+            )
+
+    def test_canvas_timeout_error_is_readable_and_does_not_expose_provider_url(self):
+        error = main.HTTPException(
+            502,
+            detail={
+                "message": "无法连接图片 API (https://provider.invalid/***) : ReadTimeout",
+                "code": "IMAGE_PROVIDER_RESULT_UNKNOWN",
+                "retryable": True,
+                "providerCalled": True,
+            },
+        )
+        message = main._custom_canvas_background_error(error)
+        self.assertIn("可重试失败项", message)
+        self.assertNotIn("provider.invalid", message)
+        self.assertNotIn("{'message'", message)
+
     def test_reference_compaction_has_an_ffmpeg_fallback_without_pillow(self):
         if main.Image is None:
             self.skipTest("The fallback path is already active without Pillow")

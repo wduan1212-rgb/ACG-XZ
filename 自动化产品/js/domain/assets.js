@@ -259,12 +259,13 @@ function assetMatchesLibraryRole(asset, role) {
   return true;
 }
 
-function duplicateAssetByHash(hash, type = "图片", tags = []) {
+function duplicateAssetByHash(hash, type = "图片", tags = [], accountId = null) {
   if (!hash) return null;
   const role = incomingAssetLibraryRole(tags);
   return state.assets.find(a =>
     a.type === type
     && a.contentHash === hash
+    && String(a.accountId || "") === String(accountId || "")
     && assetMatchesLibraryRole(a, role)
   ) || null;
 }
@@ -433,7 +434,7 @@ export function urlFor(idOrAsset) {
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
 export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false, processImage = true }) {
   const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
-  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags, accountId);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
   const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || "未命名素材", type, tags, createdAt: Date.now(), hasBlob: !!dataUrl, contentHash };
   if (dataUrl) {
@@ -477,7 +478,7 @@ export async function addAssetFromFile(accountId, file, {
   const sourceBlob = normalizeAssetBlobMime(file, mime, file.name || assetName);
   const blob = type === "图片" && processImage ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
   const contentHash = await assetHashFromBlob(blob);
-  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags, accountId);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });
   const a = {
     id: uid(),

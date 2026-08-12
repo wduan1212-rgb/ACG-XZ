@@ -727,6 +727,15 @@ registerProvider({
       if (providerResultUnknown) {
         let reconciliation = null;
         try { reconciliation = await imageOperationStatus(ref); } catch (_) {}
+        if (["failed", "not_called"].includes(String(reconciliation?.status || ""))) {
+          const retryable = new Error("图片上游已确认本次未成功，可安全重试该图片");
+          retryable.code = "PROVIDER_RETRY_REQUIRED";
+          retryable.retryable = true;
+          retryable.providerCalled = false;
+          retryable.newOperationRequired = true;
+          retryable.reconciliation = reconciliation;
+          throw retryable;
+        }
         const deferred = new Error(
           reconciliation?.status === "succeeded"
             ? "图片上游已完成，但浏览器回包丢失；正在核对结果，禁止重复生成"

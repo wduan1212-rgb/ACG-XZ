@@ -4,15 +4,15 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260811-v1424-creative-reference-1";
+import { setStage, touch } from "./productions.js?v=20260812-v1425-batch-media-recovery-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260811-v1424-creative-reference-1";
+import { assertPublishText } from "./publishRules.js?v=20260812-v1425-batch-media-recovery-1";
 import {
   accountPublishAvailable,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "./productionQuota.js?v=20260811-v1424-creative-reference-1";
+} from "./productionQuota.js?v=20260812-v1425-batch-media-recovery-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -52,6 +52,25 @@ function publisherNameFor(asset, prod = null) {
   // byMemberName is a historical snapshot.  Prefer the current member name
   // so Settings renames are reflected everywhere without rewriting history.
   return memberNameById(asset?.byMemberId) || memberNameById(prod?.ownerId) || asset?.byMemberName || "";
+}
+
+export function productionImageAssetIssues(p) {
+  if (!p || p.mode !== "图文") return [];
+  const items = Array.isArray(p.artifacts?.images?.items) ? p.artifacts.images.items : [];
+  if (!items.length) return [{ index: 0, assetId: "", reason: "empty" }];
+  return items.flatMap((item, index) => {
+    const assetId = String(item?.assetId || "").trim();
+    if (!assetId) return [{ index, assetId: "", reason: "missing" }];
+    const asset = assetById(assetId);
+    if (!asset) return [{ index, assetId, reason: "not-found" }];
+    if (asset.delivered) return [{ index, assetId, reason: "already-delivered" }];
+    if (asset.type !== "图片") return [{ index, assetId, reason: "wrong-type" }];
+    if (String(asset.accountId || "") !== String(p.accountId || "")) {
+      return [{ index, assetId, reason: "wrong-account" }];
+    }
+    if (asset.fileMissing === true) return [{ index, assetId, reason: "file-missing" }];
+    return [];
+  });
 }
 
 function deliverySnapshotFromProduction(p, acc, productTag = productTagFor(p)) {
@@ -241,6 +260,14 @@ export async function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  const imageIssues = productionImageAssetIssues(p);
+  if (imageIssues.length) {
+    const positions = imageIssues.map(issue => issue.index + 1).join("、");
+    const error = new Error(`第 ${positions} 张图片尚未正确同步，请先重试这些图片再发布`);
+    error.code = "DELIVERY_MEDIA_INCOMPLETE";
+    error.imageIssues = imageIssues;
+    throw error;
+  }
   await refreshAccountPublishQuotas([acc.id], { force: true });
   if (!accountPublishAvailable(acc.id)) {
     throw new Error("该账号今日已达到 2 条内容的发布上限");

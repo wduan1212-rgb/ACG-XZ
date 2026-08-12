@@ -259,6 +259,35 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             else:
                 os.environ[name] = previous
 
+    def test_test_mode_never_uses_main_checkout_private_environment_fallback(self):
+        name = "ACG_TEST_MODE_ENV_FALLBACK"
+        previous = os.environ.pop(name, None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                main_app = root / "main" / "自动化产品"
+                main_app.mkdir(parents=True)
+                main_git = root / "main" / ".git"
+                git_worktree = main_git / "worktrees" / "test-mode"
+                git_worktree.mkdir(parents=True)
+                (git_worktree / "commondir").write_text("../..\n", "utf-8")
+                worktree = root / "worktrees" / "test-mode"
+                app = worktree / "自动化产品"
+                app.mkdir(parents=True)
+                (worktree / ".git").write_text(
+                    f"gitdir: {git_worktree}\n",
+                    "utf-8",
+                )
+                (main_app / ".env.local").write_text(f"{name}=must-not-load\n", "utf-8")
+                with patch.object(runtime_config, "runtime_mode", return_value="test"):
+                    runtime_config.load_environment(app)
+                self.assertIsNone(os.environ.get(name))
+        finally:
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+
     def test_production_never_uses_main_checkout_private_environment_fallback(self):
         name = "ACG_TEST_PRODUCTION_ENV_FALLBACK"
         previous = os.environ.pop(name, None)

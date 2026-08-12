@@ -1,5 +1,21 @@
 # 星阵版本记录
 
+## v142.5 - 2026-08-12（本地候选：批量图文媒体隔离与图片重试恢复）
+
+### 本版范围
+
+- 修复批量图文跨账号错绑媒体的根因：图片资产的内容哈希去重现在同时绑定内容账号，批量生成图片每个 item 则固定建立独立资产。不同账号即使产出字节完全相同的图片，也不再复用对方的 asset ID。
+- 发布前浏览器对每张图执行存在性、类型、内容账号、交付状态和物理文件状态校验，不再仅以 `assetId` 非空冒充“已完成”。历史任务中可确证的错账号/错类型绑定保留原 ID 审计痕迹后只清空该错绑 item，其他成功图片不重生。批量发布改为逐条收口：某条未完整不再让后续已完整内容整批中止。
+- 图片调用不再把已确认 `failed/not_called` 的旧幂等键永久复用；只在用户明确点击重试时创建新 revision。上游结果未知也会保留已成功图片并转为明确的“可重试缺失项”，不自动重提付费 provider。
+- 无限画布对小于 `256px` 短边的 logo/条形参考图仅在上游 transport 副本中等比放大，不修改用户源资产；“把右上角图片换成第二个图片”类指令按定向编辑识别目标与 donor。`ReadTimeout` 在看板上显示可理解且不泄露 provider 地址的恢复提示。
+- release/cache identity 为 `20260812-v1425-batch-media-recovery-1`。本版不新增 SQLite schema、迁移、依赖、持久目录、Nginx 或 systemd 变化；当前生产仍为 v142.3，本地候选未部署，未修改生产 SQLite、账号、媒体或任务。
+- v142.4 的 worktree 私密环境回退仅保留给 `local`。`test` 与 `production` 都不再沿 Git commondir 读取主检出 `.env.local`，保证无密钥锁定套件的结果不会被开发者本机配置污染；本地直接启动的便利性保留。
+
+### 验证边界
+
+- 批量媒体、图片 MaaS 与无限画布定向回归 `77/77` 通过；无密钥锁定主服务 CPython 3.12.11 收集 `817`，`816 passed + 1` 个既有获准 v120 快照 skip；视频 sidecar `160/160`，Node `129/129`。无限画布 `lint` / `typecheck` / `build:embed` 通过，vendor 审计同步为 `63 files / 1,768,749 bytes / 1cec16f2cd3fede5021d521cd8d0abcc3f46d9d2409c8f3dad5f63b8d6189d75`。这些自动测试使用本地数据/fake provider，未触发真实图片、视频、语音、发布或供应商回传。
+- release verifier 通过：Phase 0 `3c497d0b3a523fb5ba21a5cb964d47c33cb8e77b0d0df7f356166e770c72671f`，ESM `61 modules / 349 edges`，graph `13043a28971f31c5f1f220243a2669f1920f69c6e656e2df673dd548e60c498b`，closure `77dbdd6882192bc0bd48109f3f42805b87f3ba02b9169cfc9cfe5f08a5da6285`，runtime `65 files / 3,318,796 bytes / c478fbe3aefb64e8c1d273f65b0fa9fb20cea7ee2ad5f5c3acf1ad39dcd2636f`。
+
 ## v142.4 - 2026-08-11（本地候选：Seedance 参考闭环与并发图卡 JSON 收口）
 
 ### 本版范围

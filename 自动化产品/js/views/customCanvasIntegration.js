@@ -375,7 +375,7 @@ export async function mountCustomCanvas(
     // Cache-bust the iframe entry alongside the main application build. The
     // canvas itself continues to own hashed chunk URLs; this only prevents a
     // browser from reusing an old entry document after a safe static rebuild.
-    iframe.src = `/XZ-Design/?embed=1&v=20260811-v1424-creative-reference-1${projectHash(currentProjectId)}`;
+    iframe.src = `/XZ-Design/?embed=1&v=20260812-v1425-batch-media-recovery-1${projectHash(currentProjectId)}`;
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";
@@ -411,13 +411,13 @@ export async function mountCustomCanvas(
     if (!iframe) return mountCanvasFrame();
     const nextHash = projectHash(nextProjectId);
     if (!iframeReady) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1424-creative-reference-1${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260812-v1425-batch-media-recovery-1${nextHash}`;
       return true;
     }
     try {
       iframe.contentWindow.location.hash = nextHash.slice(1);
     } catch (_) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1424-creative-reference-1${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260812-v1425-batch-media-recovery-1${nextHash}`;
     }
     return true;
   };
@@ -487,7 +487,7 @@ export async function mountCustomCanvas(
       iframeReady = false;
       canvasAppReady = false;
       pendingLaunchSent = false;
-      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1424-creative-reference-1${projectHash(currentProjectId)}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260812-v1425-batch-media-recovery-1${projectHash(currentProjectId)}`;
       return true;
     },
     markPublished({

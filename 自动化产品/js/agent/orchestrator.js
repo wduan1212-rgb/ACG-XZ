@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260811-v1424-creative-reference-1";
+import { AI } from "../api/ai.js?v=20260812-v1425-batch-media-recovery-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260811-v1424-creative-reference-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260811-v1424-creative-reference-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260812-v1425-batch-media-recovery-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260812-v1425-batch-media-recovery-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260811-v1424-creative-reference-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260812-v1425-batch-media-recovery-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260811-v1424-creative-reference-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260812-v1425-batch-media-recovery-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -1222,10 +1222,16 @@ export const activeBatches = () => state.batches.filter(b => b.phase !== "done" 
    都是权威持久态，因此只按可证明的检查点分类：已有图片提示词才接续生图，
    图片已齐只推进审核，空计划则回到起草，不把 0/0 外壳永久留在生成中。 */
 export function classifyHydratedBatchRecovery(batch) {
-  const recovery = { draft: [], images: [], settle: [], waiting: [], stale: [] };
+  const recovery = { draft: [], images: [], settle: [], invalid: [], waiting: [], stale: [] };
   const createdAt = Number(batch?.createdAt || 0);
   const staleRedraft = !createdAt || Date.now() - createdAt > HYDRATION_REDRAFT_MAX_AGE_MS;
   batchProds(batch).forEach(p => {
+    const mediaIssues = p?.mode === "图文" ? productionImageAssetIssues(p) : [];
+    const definitiveBindings = mediaIssues.filter(issue => issue.assetId && issue.reason !== "not-found");
+    if (p?.mode === "图文" && p.stage === "review" && definitiveBindings.length) {
+      recovery.invalid.push(p);
+      return;
+    }
     if (!p || !["running", "pending"].includes(String(p.stageStatus || ""))) return;
     if (p.stage === "script") {
       (p.mode === "图文" && staleRedraft ? recovery.stale : recovery.draft).push(p);
@@ -1233,8 +1239,12 @@ export function classifyHydratedBatchRecovery(batch) {
     }
     if (p.mode === "图文" && p.stage === "images") {
       const items = Array.isArray(p.artifacts?.images?.items) ? p.artifacts.images.items : [];
-      if (items.length && items.every(item => item?.assetId)) {
+      if (items.length && (!mediaIssues.length || mediaIssues.every(issue => issue.reason === "not-found"))) {
         recovery.settle.push(p);
+        return;
+      }
+      if (definitiveBindings.length) {
+        recovery.invalid.push(p);
         return;
       }
       const missing = items.filter(item => !item?.assetId);
@@ -1789,6 +1799,7 @@ function stableBatchImageOperationKey(p, item, index) {
 }
 
 function generationDeferred(error) {
+  if (error?.newOperationRequired) return false;
   return !!(error?.checkpointPending || error?.outcomeUnknown
     || error?.code === "BATCH_CHECKPOINT_PENDING"
     || error?.code === "PROVIDER_RESULT_UNKNOWN"
@@ -1796,7 +1807,9 @@ function generationDeferred(error) {
 }
 
 function clearCompletedBatchImageErrors(p) {
-  (p.artifacts?.images?.items || []).forEach(item => {
+  const invalid = new Set(productionImageAssetIssues(p).map(issue => issue.index));
+  (p.artifacts?.images?.items || []).forEach((item, index) => {
+    if (invalid.has(index)) return;
     if (!item?.assetId) return;
     item.status = "done";
     item.error = "";
@@ -1804,6 +1817,59 @@ function clearCompletedBatchImageErrors(p) {
   });
   if (p.artifacts?.images?.recovery) p.artifacts.images.recovery = null;
   p.error = null;
+}
+
+function rotateBatchImageOperation(p, item, index) {
+  item.generationRevision = Math.max(0, Number(item.generationRevision || 0)) + 1;
+  item.operationKey = `batch-image-${String(p?.id || "unknown")}-${Number(index) + 1}-revision-${item.generationRevision}`;
+}
+
+const RESETTABLE_BATCH_MEDIA_ISSUES = new Set([
+  "wrong-account",
+  "wrong-type",
+  "already-delivered",
+  "file-missing",
+]);
+
+function resetInvalidBatchImageBindings(p) {
+  const issues = productionImageAssetIssues(p).filter(issue => (
+    issue.assetId && RESETTABLE_BATCH_MEDIA_ISSUES.has(issue.reason)
+  ));
+  if (!issues.length) return 0;
+  const items = p.artifacts?.images?.items || [];
+  issues.forEach(issue => {
+    const item = items[issue.index];
+    if (!item) return;
+    item.invalidAssetBinding = {
+      assetId: issue.assetId,
+      reason: issue.reason,
+      detectedAt: Date.now(),
+    };
+    item.assetId = null;
+    item.status = "failed";
+    item.error = `第 ${issue.index + 1} 张图片未正确绑定到当前账号`;
+    item.confirmation = null;
+  });
+  setStage(p, "images", "failed");
+  p.error = `有 ${issues.length} 张图片未正确同步，已保留其他成功图片，请重试缺失项`;
+  return issues.length;
+}
+
+function prepareExplicitBatchImageRetry(p) {
+  const items = p.artifacts?.images?.items || [];
+  resetInvalidBatchImageBindings(p);
+  let prepared = 0;
+  items.forEach((item, index) => {
+    if (item?.assetId || !String(item?.prompt || "").trim()) return;
+    if (["confirming", "failed"].includes(String(item.status || "")) || item.confirmation) {
+      rotateBatchImageOperation(p, item, index);
+    }
+    item.status = "pending";
+    item.error = "";
+    item.confirmation = null;
+    prepared += 1;
+  });
+  return prepared;
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {
@@ -1827,6 +1893,17 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it?.prompt) continue;
+    const issue = productionImageAssetIssues(p).find(row => row.index === i);
+    if (issue?.assetId && RESETTABLE_BATCH_MEDIA_ISSUES.has(issue.reason)) {
+      it.invalidAssetBinding = {
+        assetId: issue.assetId,
+        reason: issue.reason,
+        detectedAt: Date.now(),
+      };
+      it.assetId = null;
+      rotateBatchImageOperation(p, it, i);
+      it.confirmation = null;
+    }
     const hasItemRefOverride = Object.prototype.hasOwnProperty.call(it, "refAssetIds");
     if (it.assetId && it.status === "done") continue;
     if (!hasItemRefOverride) {
@@ -1877,7 +1954,8 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       const a = await addAssetFromDataUrl(acc.id, {
         name: `站内笔记图${String(i + 1).padStart(2, "0")}_${(it.title || p.title || "").slice(0, 10)}`,
         tags: ["笔记图", "站内生成", "发布前精修"],
-        dataUrl: polished
+        dataUrl: polished,
+        forceNew: true,
       });
       it.assetId = a.id;
       it.status = "done";
@@ -1894,6 +1972,8 @@ async function generateBatchImagesInHouse(p, batch, acc) {
           status: err?.reconciliation?.status || "unknown",
           checkedAt: Date.now(),
         };
+      } else if (err?.newOperationRequired) {
+        it.status = "failed";
       } else if (err?.retryable === true && err?.providerCalled === false) {
         it.status = "pending";
       } else {
@@ -1906,7 +1986,8 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     }
   }
   if (!items.length) throw new Error("站内生图计划没有可执行图片");
-  const unresolvedIndex = items.findIndex(item => !item.assetId);
+  const issue = productionImageAssetIssues(p)[0];
+  const unresolvedIndex = issue ? issue.index : -1;
   if (unresolvedIndex >= 0) {
     const unresolved = items[unresolvedIndex];
     throw new Error(unresolved?.error || `第 ${unresolvedIndex + 1} 张图片缺少提示词或未返回结果`);
@@ -2006,6 +2087,15 @@ async function runBatchImagesToReview(p, batch) {
     await persistBatchProductionCheckpoint(p);
     return generated;
   } catch (e) {
+    if (e?.outcomeUnknown || e?.code === "PROVIDER_RESULT_UNKNOWN") {
+      p.artifacts.images.recovery = {
+        status: "explicit-retry-required",
+        updatedAt: Date.now(),
+      };
+      setStatus(p, "failed", "图片上游结果未能取回；已保留成功图片，可点击重试缺失项");
+      await persistBatchProductionCheckpoint(p).catch(() => {});
+      return false;
+    }
     if (generationDeferred(e)) {
       p.stageStatus = "pending";
       p.error = null;
@@ -3664,18 +3754,44 @@ export function approveAll(batch) {
   return n;
 }
 export async function deliverAll(batch, opts = {}) {
-  let n = 0;
+  const result = { published: 0, failed: [] };
   for (const p of batchProds(batch)) {
-    if (p.stage === "review" && await deliver(p, opts)) n++;
+    if (p.stage !== "review") continue;
+    try {
+      if (await deliver(p, opts)) result.published += 1;
+    } catch (error) {
+      result.failed.push({
+        productionId: p.id,
+        accountId: p.accountId,
+        title: p.artifacts?.copy?.title || p.title || "未命名内容",
+        message: error?.message || "发布失败",
+      });
+      if (error?.code === "DELIVERY_MEDIA_INCOMPLETE") {
+        resetInvalidBatchImageBindings(p);
+        await persistBatchProductionCheckpoint(p).catch(() => {});
+      }
+    }
   }
   evaluate(batch.id);
-  return n;
+  return result;
 }
 export function retryFailedIn(batch) {
   if (!batch || batch.paused) return 0;
   let n = 0;
   batchProds(batch).forEach(p => {
     const jobStage = p.stage === "render" || p.stage === "workshop";
+    const retryableImages = p.mode === "图文"
+      && (productionImageAssetIssues(p).length || (p.artifacts?.images?.items || []).some(item => (
+        !item?.assetId && ["confirming", "failed"].includes(String(item?.status || ""))
+      )));
+    if (retryableImages && ["images", "review"].includes(p.stage)) {
+      if (prepareExplicitBatchImageRetry(p)) {
+        setStage(p, "images", "running");
+        runBatchImagesToReview(p, batch);
+        n++;
+      }
+      return;
+    }
     if (p.stageStatus !== "failed") {
       // 渲染/工坊中的失败 job 也重试
       if (jobStage) currentJobsOf(p).filter(j => j.status === "failed").forEach(j => { setStatus(p, "running"); retryJob(j.id); n++; });
@@ -3693,10 +3809,10 @@ export function retryFailedIn(batch) {
       const imageItems = Array.isArray(p.artifacts?.images?.items) ? p.artifacts.images.items : [];
       const retryAction = batchImageRetryAction(imageItems);
       if (retryAction === "confirm") {
-        p.stageStatus = "pending";
-        p.error = null;
-        touch(p);
-        save("productions");
+        prepareExplicitBatchImageRetry(p);
+        setStage(p, "images", "running");
+        runBatchImagesToReview(p, batch);
+        n++;
       } else if (retryAction === "resume") {
         runBatchImagesToReview(p, batch);
         n++;
@@ -3896,6 +4012,13 @@ export function resumeActiveBatches() {
   batches.forEach(b => {
     if (b.paused) return;
     const hydration = classifyHydratedBatchRecovery(b);
+    if (hydration.invalid.length) {
+      runPool(hydration.invalid, async p => {
+        resetInvalidBatchImageBindings(p);
+        await persistBatchProductionCheckpoint(p);
+      }, 1).then(() => evaluate(b.id));
+      resumed += hydration.invalid.length;
+    }
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
       && p.stage === "workshop"
