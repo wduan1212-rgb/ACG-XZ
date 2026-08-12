@@ -1714,11 +1714,8 @@ def _maas_image_body(
         "logo_add": 0,
     }
     if ref_files:
-        # TokenHub Hunyuan image generation expects an array of URL/data-URL
-        # strings. The OpenAI edit object shape and input_fidelity are not
-        # supported on this route; gateways may accept one object loosely but
-        # reject native multi-image requests as invalid parameters.
-        body["images"] = [_image_ref_to_data_url(blob, mime) for _, blob, mime in ref_files[:8]]
+        body["images"] = [{"image_url": _image_ref_to_data_url(blob, mime)} for _, blob, mime in ref_files[:1]]
+        body["input_fidelity"] = "high"
     return body
 
 
@@ -1990,9 +1987,44 @@ def _compact_image_ref_files(ref_files: List[Tuple[str, bytes, str]]) -> Tuple[L
 def _prepare_maas_reference_transport(
     ref_files: List[Tuple[str, bytes, str]],
 ) -> Tuple[List[Tuple[str, bytes, str]], int]:
-    """Preserve normalized references as native TokenHub string-array inputs."""
+    """Adapt logical references to the custom MaaS model's single-image input."""
     active = list(ref_files[:8])
-    return active, len(active)
+    if len(active) <= 1:
+        return active, len(active)
+    if Image is None:
+        raise HTTPException(500, "服务器缺少多参考图安全组版能力，请联系管理员")
+    columns = 2 if len(active) <= 4 else 3
+    rows = int(math.ceil(len(active) / columns))
+    canvas_edge = 1000
+    gap = 16
+    cell_width = (canvas_edge - gap * (columns + 1)) // columns
+    cell_height = (canvas_edge - gap * (rows + 1)) // rows
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    sheet = Image.new("RGB", (canvas_edge, canvas_edge), "white")
+    for index, (_name, blob, _mime) in enumerate(active):
+        try:
+            with Image.open(io.BytesIO(blob)) as opened:
+                opened = ImageOps.exif_transpose(opened) if ImageOps else opened
+                source = opened.convert("RGBA")
+                scale = min(cell_width / source.width, cell_height / source.height, 1.0)
+                target = (
+                    max(1, int(round(source.width * scale))),
+                    max(1, int(round(source.height * scale))),
+                )
+                fitted = source.resize(target, resampling) if target != source.size else source
+                column, row = index % columns, index // columns
+                x = gap + column * (cell_width + gap) + (cell_width - target[0]) // 2
+                y = gap + row * (cell_height + gap) + (cell_height - target[1]) // 2
+                sheet.paste(fitted, (x, y), fitted.getchannel("A"))
+        except Exception as exc:
+            raise HTTPException(400, "参考图无法安全组版：%s" % exc.__class__.__name__)
+    output = io.BytesIO()
+    # Match the ordinary 1000px PNG profile proven to enter this custom model.
+    sheet.save(output, format="PNG")
+    blob = output.getvalue()
+    if _image_ref_data_url_size(blob, "image/png") > IMAGE_REFERENCE_MAX_DATA_URL_BYTES:
+        raise HTTPException(413, "多参考图组版后超过图片模型请求上限；请减少参考图数量后重试")
+    return [("reference-board.png", blob, "image/png")], len(active)
 
 
 def _normalize_small_image_reference(

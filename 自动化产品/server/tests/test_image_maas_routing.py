@@ -34,9 +34,9 @@ class ImageMaasRoutingTest(unittest.TestCase):
             [("reference.jpg", b"jpeg-bytes", "image/jpeg")],
         )
         self.assertEqual(len(ref_body["images"]), 1)
-        self.assertIsInstance(ref_body["images"][0], str)
-        self.assertTrue(ref_body["images"][0].startswith("data:image/jpeg;base64,"))
-        self.assertNotIn("input_fidelity", ref_body)
+        self.assertIsInstance(ref_body["images"][0], dict)
+        self.assertTrue(ref_body["images"][0]["image_url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(ref_body["input_fidelity"], "high")
 
     def test_base64_image_response_is_preserved(self):
         raw = b"jpeg-result"
@@ -116,7 +116,7 @@ class ImageMaasRoutingTest(unittest.TestCase):
             center = normalized.getpixel((normalized.size[0] // 2, normalized.size[1] // 2))
             self.assertLess(sum(abs(center[i] - value) for i, value in enumerate((17, 91, 173))), 18)
 
-    def test_multiple_maas_references_remain_native_transport_entries(self):
+    def test_multiple_maas_references_use_proven_single_image_profile(self):
         if main.Image is None:
             self.skipTest("Pillow is required for multi-reference transport")
         refs = []
@@ -130,9 +130,12 @@ class ImageMaasRoutingTest(unittest.TestCase):
         transport, logical_count = main._prepare_maas_reference_transport(refs)
 
         self.assertEqual(logical_count, 4)
-        self.assertEqual(transport, refs)
+        self.assertEqual(len(transport), 1)
+        self.assertEqual(transport[0][2], "image/png")
+        with main.Image.open(io.BytesIO(transport[0][1])) as board:
+            self.assertEqual(board.size, (1000, 1000))
 
-    def test_maas_body_uses_native_string_array_without_openai_edit_fields(self):
+    def test_maas_body_limits_custom_model_transport_to_one_reference(self):
         refs = [
             ("one.png", b"one", "image/png"),
             ("two.jpg", b"two", "image/jpeg"),
@@ -140,11 +143,9 @@ class ImageMaasRoutingTest(unittest.TestCase):
 
         body = main._maas_image_body("prompt", "custom-imagemodel-gt", "1:1", refs)
 
-        self.assertEqual(len(body["images"]), 2)
-        self.assertTrue(all(isinstance(value, str) for value in body["images"]))
-        self.assertTrue(body["images"][0].startswith("data:image/png;base64,"))
-        self.assertTrue(body["images"][1].startswith("data:image/jpeg;base64,"))
-        self.assertNotIn("input_fidelity", body)
+        self.assertEqual(len(body["images"]), 1)
+        self.assertTrue(body["images"][0]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(body["input_fidelity"], "high")
 
     def test_canvas_timeout_error_is_readable_and_does_not_expose_provider_url(self):
         error = main.HTTPException(
