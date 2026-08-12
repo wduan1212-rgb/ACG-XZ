@@ -735,7 +735,7 @@ console.log(JSON.stringify({
         self.assertIn("referenceContext: creativeReference.brief", orchestrator)
         self.assertIn("originalRefAssetIds: creativeReference.refIds", orchestrator)
         self.assertIn("统一参考图视觉锚点", orchestrator)
-        self.assertIn('activeProviderFor("image")', orchestrator)
+        self.assertIn("await imageProviderReadyForSubmit()", orchestrator)
         self.assertIn('["创意视频故事版", "素描分镜板", "image-2"', orchestrator)
         self.assertIn('`${p.id}-creative-storyboard-sheet`', orchestrator)
         self.assertIn('storyboardSheet: {', orchestrator)
