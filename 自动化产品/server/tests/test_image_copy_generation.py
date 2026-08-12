@@ -21,6 +21,43 @@ def run_node(script: str) -> dict:
 
 
 class ImageCopyGenerationTest(unittest.TestCase):
+    def test_title_copy_caps_body_and_tags_together_at_1000_unicode_characters(self):
+        result = run_node(
+            r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+const requests = [];
+globalThis.fetch = async (_url, options = {}) => {
+  const request = JSON.parse(options.body || '{}');
+  requests.push(request);
+  return {
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: JSON.stringify({
+      copy: '文'.repeat(1100) + '\n#批量图文 #标题生文案'
+    }) } }] }),
+    text: async () => ''
+  };
+};
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=copy-limit-test');
+const out = await AI.generateImageCopyFromTitle({ title:'批量图文如何稳定生成', account:{} });
+console.log(JSON.stringify({
+  length: [...out.copy].length,
+  tags: [...out.copy.matchAll(/#[^\s#]+/g)].map(match => match[0]),
+  promptHasCombinedLimit: String(requests[0]?.messages?.[0]?.content || '').includes('正文和标签合计不得超过 1000 个 Unicode 字符')
+}));
+"""
+        )
+        self.assertLessEqual(result["length"], 1000)
+        self.assertGreaterEqual(len(result["tags"]), 4)
+        self.assertIn("#批量图文", result["tags"])
+        self.assertTrue(result["promptHasCombinedLimit"])
+
     def test_single_image_title_copy_removes_duplicate_title_and_markdown(self):
         result = run_node(
             r"""

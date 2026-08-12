@@ -10959,6 +10959,7 @@ def _private_media_access_or_404(
     member: dict,
     *,
     delivery_id: str = "",
+    account_id: str = "",
     legacy_authorizer=None,
 ) -> dict:
     """Resolve one registered media row without leaking cross-tenant names."""
@@ -10983,9 +10984,13 @@ def _private_media_access_or_404(
              "message": "历史媒体原件不可用，相关记录仍保留"},
         )
     try:
-        if delivery_id:
+        if delivery_id or account_id:
             record, error = store.private_media_access(
-                kind, key, requester, str(delivery_id),
+                kind,
+                key,
+                requester,
+                str(delivery_id),
+                str(account_id),
             )
         else:
             record, error = store.private_media_access(kind, key, requester)
@@ -11140,6 +11145,7 @@ def file_get(
     name: str,
     request: Request,
     deliveryId: str = "",
+    accountId: str = "",
     me=Depends(_private_media_session_member),
 ):
     path = _upload_path(name)
@@ -11148,6 +11154,7 @@ def file_get(
         path.name,
         me,
         delivery_id=deliveryId,
+        account_id=accountId,
         legacy_authorizer=lambda: _legacy_upload_access_allowed(path.name, me),
     )
     if not path.exists():

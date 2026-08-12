@@ -4,11 +4,11 @@ import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/uti
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, accountById, canManageAccounts } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
-import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260812-v1425-batch-media-recovery-1";
+import { accountAvatarUrl, addAssetFromDataUrl, urlFor } from "../domain/assets.js";
+import { AI } from "../api/ai.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
-import { openModal, toast } from "../ui/components.js?v=20260812-v1425-batch-media-recovery-1";
+import { openModal, toast } from "../ui/components.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
 import { go, render as routerRender } from "../core/router.js";
 import * as remote from "../core/remote.js";
 
@@ -51,7 +51,7 @@ export function openAccountDialog(accountId = null) {
         if (previousHeight > 0) root.style.minHeight = `${Math.round(previousHeight)}px`;
         const isVideo = draft.mode === "视频";
         const isDH = isVideo;
-        const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
+        const avatarUrl = draft.avatarDataUrl || (editing ? accountAvatarUrl(editing) : "");
         const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
         const referenceAudioAssets = productionAssets(editing?.id || "__new_account__")
           .filter(a => a.type === "音频" && (a.tags || []).some(t => /参考音频库|语音素材库|音色试听|口播/i.test(t)))
@@ -365,7 +365,12 @@ export function openAccountDialog(accountId = null) {
             };
             acc = editing ? updateAccount(editing.id, patch) : createAccount(patch);
             if (draft.avatarDataUrl) {
-              const aa = await addAssetFromDataUrl(acc.id, { name: name + " 账号头像", tags: ["头像"], dataUrl: draft.avatarDataUrl });
+              const aa = await addAssetFromDataUrl(acc.id, {
+                name: name + " 账号头像",
+                tags: ["头像"],
+                dataUrl: draft.avatarDataUrl,
+                deferRemoteDocument: isSupplierManager && remote.isOn(),
+              });
               acc.avatarAssetId = aa.id;
             }
             if (draft.charDataUrl && draft.mode === "视频") {

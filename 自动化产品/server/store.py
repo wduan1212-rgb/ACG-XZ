@@ -4893,8 +4893,36 @@ def _private_media_member_teams_locked(conn, member_id):
     ]
 
 
+def _private_media_supplier_registration_teams_locked(conn, owner_id):
+    """Resolve supplier teams only for creating a new owned registry row.
+
+    Supplier reads intentionally remain delivery-linked and must not inherit a
+    tenant-wide team grant merely because the parent may upload an account
+    avatar.  Registration and access therefore use separate team sets.
+    """
+    owner = str(owner_id or "")
+    member = conn.execute(
+        "SELECT role,parent_id FROM members WHERE id=?",
+        (owner,),
+    ).fetchone()
+    if not member or str(member[0] or "") not in {"supplier", "supplier_parent"}:
+        return []
+    return [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT ts.team_id FROM team_suppliers ts "
+            "JOIN teams t ON t.id=ts.team_id AND t.status='active' "
+            "WHERE ts.supplier_parent_id=? ORDER BY ts.team_id",
+            (owner,),
+        ).fetchall()
+    ]
+
+
 def _private_media_registration_team_locked(conn, owner_id, requested_team_id=""):
-    teams = _private_media_member_teams_locked(conn, owner_id)
+    teams = sorted(set([
+        *_private_media_member_teams_locked(conn, owner_id),
+        *_private_media_supplier_registration_teams_locked(conn, owner_id),
+    ]))
     requested = str(requested_team_id or "").strip()
     if requested:
         if requested not in teams:
@@ -5366,7 +5394,66 @@ def _supplier_delivery_media_allowed_locked(
     return False
 
 
-def private_media_access(kind, key, member_id, delivery_id=""):
+def _supplier_account_avatar_media_allowed_locked(
+    conn,
+    requester,
+    role,
+    account_id,
+    media_kind,
+    media_key,
+):
+    """Grant one supplier the exact avatar of one visible content account.
+
+    Supplier parents manage every content account mapped to their business
+    team; children may only see explicitly assigned accounts.  This does not
+    grant either role access to arbitrary team uploads: the account must name
+    an avatar asset, that asset must point back to the same account, carry the
+    avatar reference, and resolve to the requested private-media identity.
+    """
+
+    aid = str(account_id or "").strip()
+    if role not in _SUPPLIER_MEDIA_ROLES or not aid or media_kind != "upload":
+        return False
+    context = _supplier_access_context_locked(conn, requester, role)
+    if not context or not _supplier_account_allowed_locked(conn, context, aid):
+        return False
+    account_row = conn.execute(
+        "SELECT data FROM docs WHERE collection='accounts' AND id=?",
+        (aid,),
+    ).fetchone()
+    if not account_row:
+        return False
+    try:
+        account = json.loads(account_row[0])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    avatar_asset_id = str(
+        account.get("avatarAssetId") if isinstance(account, dict) else ""
+    ).strip()
+    if not avatar_asset_id:
+        return False
+    asset_row = conn.execute(
+        "SELECT data FROM docs WHERE collection='assets' AND id=?",
+        (avatar_asset_id,),
+    ).fetchone()
+    if not asset_row:
+        return False
+    try:
+        asset = json.loads(asset_row[0])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(asset, dict) or str(asset.get("accountId") or "") != aid:
+        return False
+    target = (media_kind, media_key)
+    if str(asset.get("serverFileName") or "").strip() == media_key:
+        return True
+    return any(
+        _delivery_media_identity(asset.get(field)) == target
+        for field in ("fileUrl", "url")
+    )
+
+
+def private_media_access(kind, key, member_id, delivery_id="", account_id=""):
     """Resolve owner/team access; platform role never grants a global bypass."""
 
     media_kind, media_key = _normalize_private_media_key(kind, key)
@@ -5409,6 +5496,18 @@ def private_media_access(kind, key, member_id, delivery_id=""):
                     record = _private_media_row_public(row)
                     record["deliveryId"] = str(delivery_id or "").strip()
                     record["accessVia"] = "supplier-delivery"
+                    return record, None
+                if _supplier_account_avatar_media_allowed_locked(
+                    conn,
+                    requester,
+                    role,
+                    account_id,
+                    media_kind,
+                    media_key,
+                ):
+                    record = _private_media_row_public(row)
+                    record["accountId"] = str(account_id or "").strip()
+                    record["accessVia"] = "supplier-account-avatar"
                     return record, None
             return None, "forbidden"
         finally:

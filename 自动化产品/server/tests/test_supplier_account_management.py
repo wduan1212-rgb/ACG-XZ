@@ -20,8 +20,91 @@ def default_supplier_parent_id(store):
 
 
 class SupplierAccountManagementTests(unittest.TestCase):
+    def test_supplier_parent_avatar_media_registers_to_mapped_supplier_team(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent_id = default_supplier_parent_id(store)
+            context = store.supplier_access_context(parent_id, "supplier_parent")
+            self.assertIsNotNone(context)
+
+            registered = store.register_private_media(
+                "upload",
+                f"{parent_id}--supplier-avatar.png",
+                parent_id,
+                team_id=context["teamId"],
+                provenance_kind="asset",
+                provenance_id="supplier-avatar-asset",
+            )
+
+            self.assertTrue(registered["created"])
+            self.assertEqual(context["teamId"], registered["teamId"])
+            self.assertIsNone(store.private_media_access(
+                "upload", f"{parent_id}--supplier-avatar.png", parent_id,
+            )[1])
+
+    def test_supplier_reads_only_exact_managed_account_avatar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent_id = default_supplier_parent_id(store)
+            admin_id = store.get_member_by_username(store.DEFAULT_ADMIN_USERNAME)[0]
+            account_id = "supplier-avatar-account-01"
+            other_account_id = "supplier-avatar-account-02"
+            asset_id = "supplier-avatar-asset-01"
+            media_key = f"{admin_id}--historical-account-avatar.png"
+            store.upsert_docs("accounts", [
+                {
+                    "id": account_id,
+                    "name": "供应商管理账号",
+                    "platform": "小红书",
+                    "mode": "图文",
+                    "avatarAssetId": asset_id,
+                },
+                {
+                    "id": other_account_id,
+                    "name": "另一个账号",
+                    "platform": "小红书",
+                    "mode": "图文",
+                },
+            ])
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, [account_id, other_account_id]
+            )
+            store.upsert_docs("assets", [{
+                "id": asset_id,
+                "accountId": account_id,
+                "name": "历史账号头像",
+                "serverFileName": media_key,
+                "fileUrl": f"/api/files/{media_key}",
+            }])
+            store.register_private_media(
+                "upload",
+                media_key,
+                admin_id,
+                team_id=store.INTERNAL_TEAM_ID,
+                provenance_kind="asset",
+                provenance_id=asset_id,
+            )
+
+            record, error = store.private_media_access(
+                "upload", media_key, parent_id, "", account_id,
+            )
+            self.assertIsNone(error)
+            self.assertEqual("supplier-account-avatar", record["accessVia"])
+            self.assertEqual(account_id, record["accountId"])
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access("upload", media_key, parent_id)[1],
+            )
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access(
+                    "upload", media_key, parent_id, "", other_account_id,
+                )[1],
+            )
+
     def test_supplier_account_editor_keeps_creator_style_configuration_private(self):
         source = (APP_DIR / "js/views/accountDialog.js").read_text(encoding="utf-8")
+        assets_source = (APP_DIR / "js/domain/assets.js").read_text(encoding="utf-8")
         self.assertIn('const isSupplierManager = ["supplier", "supplier_parent"].includes(state.role)', source)
         self.assertIn('!isSupplierManager ? `<label class="field full">创作风格', source)
         self.assertIn('draft.mode === "图文" && !isSupplierManager', source)
@@ -32,6 +115,12 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('${!isSupplierManager ? `<div class="ad-block">', source)
         self.assertIn('$("#adAssets", root)?.addEventListener', source)
         self.assertIn('if (charDrop) wireDropZone', source)
+        self.assertIn('deferRemoteDocument: isSupplierManager && remote.isOn()', source)
+        self.assertIn('deferRemoteDocument = false', assets_source)
+        self.assertIn('await cacheCanonicalDocuments("assets", a)', assets_source)
+        self.assertIn('await persistRecoveredDocuments("assets", a)', assets_source)
+        self.assertIn('export function accountAvatarUrl(account, role = state.role)', assets_source)
+        self.assertIn('scoped.searchParams.set("accountId", String(account.id))', assets_source)
 
     def test_supplier_account_assets_only_accept_avatar(self):
         with tempfile.TemporaryDirectory() as tmp:

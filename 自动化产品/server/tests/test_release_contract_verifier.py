@@ -281,7 +281,7 @@ class ReleaseContractVerifierTest(unittest.TestCase):
         self.assertGreaterEqual(result["esm"]["reachableModules"], 50)
         self.assertEqual(63, result["canvas"]["fileCount"])
         self.assertEqual(
-            "20260812-v1425-batch-media-recovery-1",
+            "20260812-v1426-supplier-avatar-copy-limit-1",
             result["runtime"]["releaseId"],
         )
         self.assertGreaterEqual(result["runtime"]["fileCount"], 45)

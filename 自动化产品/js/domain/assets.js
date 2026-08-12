@@ -1,7 +1,7 @@
 /* 资产领域：共享模式下二进制上传到服务端，离线模式保留 IndexedDB Blob 缓存 */
 
 import { db } from "../core/db.js";
-import { state, save, assetById, accountById, ownedBy, persistRecoveredDocuments } from "../core/store.js";
+import { state, save, assetById, accountById, ownedBy, persistRecoveredDocuments, cacheCanonicalDocuments } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
@@ -431,8 +431,33 @@ export function urlFor(idOrAsset) {
   return null;
 }
 
+export function accountAvatarUrl(account, role = state.role) {
+  const avatar = account?.avatarUrl || (account?.avatarAssetId ? urlFor(account.avatarAssetId) : "");
+  if (!avatar || !["supplier", "supplier_parent", "supplier_child"].includes(role)) return avatar;
+  let scoped;
+  try {
+    const origin = globalThis.location?.origin || "http://local.invalid";
+    scoped = new URL(avatar, origin);
+  } catch {
+    return avatar;
+  }
+  if (!scoped.pathname.startsWith("/api/files/") || !account?.id) return avatar;
+  scoped.searchParams.set("accountId", String(account.id));
+  return String(avatar).startsWith("/")
+    ? `${scoped.pathname}${scoped.search}${scoped.hash}`
+    : scoped.toString();
+}
+
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
-export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false, processImage = true }) {
+export async function addAssetFromDataUrl(accountId, {
+  name,
+  type = "图片",
+  tags = [],
+  dataUrl,
+  forceNew = false,
+  processImage = true,
+  deferRemoteDocument = false,
+}) {
   const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
   const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags, accountId);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
@@ -457,7 +482,15 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
     }
   }
   state.assets.push(a);
-  await persistRecoveredDocuments("assets", a);
+  if (deferRemoteDocument && remote.isOn()) {
+    // Supplier account avatars are committed by the dedicated account API in
+    // one transaction. Keep the provisional document only in IndexedDB here;
+    // a generic /api/db/assets write would be correctly rejected and must not
+    // interrupt the authorized supplier flow after the file was registered.
+    await cacheCanonicalDocuments("assets", a);
+  } else {
+    await persistRecoveredDocuments("assets", a);
+  }
   save("meta");
   return a;
 }

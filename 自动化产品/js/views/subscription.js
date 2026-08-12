@@ -1,7 +1,7 @@
 import { esc } from "../core/util.js";
 import { currentMember, currentTeam } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260812-v1425-batch-media-recovery-1";
+import { openModal, toast } from "../ui/components.js?v=20260812-v1426-supplier-avatar-copy-limit-1";
 
 const PLANS = [
   {
