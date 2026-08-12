@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v142.5 - 2026-08-12（本地候选：批量图文媒体隔离与图片重试恢复）
+## v142.5 - 2026-08-12（生产：批量图文媒体隔离与图片重试恢复）
+
+### 生产部署闭环
+
+- 生产流量运行功能 SHA `f3287b230f8e76d3e744a35bb153307e44e94440`，分支 `codex/v141-content-governance`，release/cache `20260812-v1425-batch-media-recovery-1`，实际 sibling release 为 `20260812-v1425-batch-media-recovery-1-f3287b23`。新主服务/sidecar 在无流量端口完成验证后，以两条置于 v142.3 规则之前的精确路由原子接流；v142.3 绿色服务、路由和更早 v141.3 服务始终 active/RW，发布全程没有停止服务器或切只读。撤销 v142.5 路由会立即回到仍在线的 v142.3，不回灌旧数据库。
+- 只从验签 Git SHA 同步代码/静态文件，既有 release 外私密 env 由服务器端原值复制，并且只覆盖 release 身份、代码路径和无流量端口。SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 projects/uploads/outputs、Nginx 和 provider 密钥均未上传、替换或写入 release/Git/日志。主服务和 sidecar 的依赖锁与 v142.3 完全一致，继续使用已验签 Linux venv；18/37 包 exact-installed 与 `pip check` 通过。
+- 目标 Ubuntu x86_64 验证通过：锁定主服务 `817 collected / 816 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`。release verifier 为 Phase 0 `3c497d0b3a523fb5ba21a5cb964d47c33cb8e77b0d0df7f356166e770c72671f`，ESM `61 modules / 349 edges`、closure `77dbdd6882192bc0bd48109f3f42805b87f3ba02b9169cfc9cfe5f08a5da6285`，canvas `63 files / 1,768,749 bytes / 1cec16f2cd3fede5021d521cd8d0abcc3f46d9d2409c8f3dad5f63b8d6189d75`，runtime `65 files / 3,318,796 bytes / c478fbe3aefb64e8c1d273f65b0fa9fb20cea7ee2ad5f5c3acf1ad39dcd2636f`。
+- 切换前在线 SQLite v2 保护点为 `/data/dumate-studio/backups/v1425-pre-f3287b23-20260812T033347Z`，manifest SHA-256 `5ffcc0ae3ce27d6b5aa3cff5e8eab621767e963466ff7f5aa865efe4e8f068fb`，备份 SHA-256 `841e2268ddd7d4a0739f17304004e8f8a6a4f69d6a176277b45fc19112d2d3e9`。独立 verify、隔离副本逐字节比较与 `quick_check=ok` 通过；验证完成后只移除了可重建的临时 restore-drill 副本。旧路由、systemd 和私密 env 的代码回滚副本保存在 `/data/dumate-studio/deployment-backups/v1425-pre-f3287b23-20260812T033347Z`。
+- 切换前后均为 `48` 表 / `66,978` 行，逐表无减少，SQLite `quick_check=ok`。媒体也无减少：uploads `6,904`、composed `1,005`、canvas blobs `645`、视频 projects/uploads/outputs `63/205/1,968`，字节数保持一致。历史一条 registry 缺失仍以同一证据 SHA 和数量保留；候选主服务先在无流量状态按旧 release 绑定正确拒绝启动，随后用新代码独立重算证明 hash/count/effective pending 未漂移，才只把既有例外的 release ID 精确重绑定到 v142.5，未修改引用、文件、owner 或业务数据。
+- 最终主服务和 sidecar 均 active/RW、`NRestarts=0`；readiness 连续两次为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，sidecar 为 `readOnly=false / writePolicy=normal`。模型用量与 sidecar usage 继续仅作 warning，不阻断普通生产；供应商曝光量、观看量、回传链接和权限数据未放宽或改写。公网 health 连续 `40/40` 为 200，root/OpenAPI/community、Nginx 入口、无限画布和视频工坊静态入口均 200，匿名鉴权为 401；管理员、创作者、Free、供应商 parent/child 共 22 条真实生产只读 API 验收全部通过。部署没有重复提交真实图片、视频、语音、发布或供应商回传。
 
 ### 本版范围
 
@@ -8,7 +17,7 @@
 - 发布前浏览器对每张图执行存在性、类型、内容账号、交付状态和物理文件状态校验，不再仅以 `assetId` 非空冒充“已完成”。历史任务中可确证的错账号/错类型绑定保留原 ID 审计痕迹后只清空该错绑 item，其他成功图片不重生。批量发布改为逐条收口：某条未完整不再让后续已完整内容整批中止。
 - 图片调用不再把已确认 `failed/not_called` 的旧幂等键永久复用；只在用户明确点击重试时创建新 revision。上游结果未知也会保留已成功图片并转为明确的“可重试缺失项”，不自动重提付费 provider。
 - 无限画布对小于 `256px` 短边的 logo/条形参考图仅在上游 transport 副本中等比放大，不修改用户源资产；“把右上角图片换成第二个图片”类指令按定向编辑识别目标与 donor。`ReadTimeout` 在看板上显示可理解且不泄露 provider 地址的恢复提示。
-- release/cache identity 为 `20260812-v1425-batch-media-recovery-1`。本版不新增 SQLite schema、迁移、依赖、持久目录、Nginx 或 systemd 变化；当前生产仍为 v142.3，本地候选未部署，未修改生产 SQLite、账号、媒体或任务。
+- release/cache identity 为 `20260812-v1425-batch-media-recovery-1`。本版不新增 SQLite schema、迁移、依赖、持久目录或 Nginx 变化；生产只新增独立绿色 systemd/路由实例并保留旧实例回滚，未修改生产 SQLite、账号、媒体或任务。
 - v142.4 的 worktree 私密环境回退仅保留给 `local`。`test` 与 `production` 都不再沿 Git commondir 读取主检出 `.env.local`，保证无密钥锁定套件的结果不会被开发者本机配置污染；本地直接启动的便利性保留。
 
 ### 验证边界

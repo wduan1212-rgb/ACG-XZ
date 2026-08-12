@@ -4,6 +4,18 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-12 v142.5 生产闭环：代码 release 目录不能冒充源码检出，测试工具链也不能盲用系统默认 Node
+
+- **现象**：目标 Linux 的 release verifier、Node 全量和绝大多数主服务测试通过，但源码快照测试的 `git ls-files` 返回 128，九个前端 Python 包装用例又因固定从 `APP_DIR.parent/自动化产品` 导入而失败；服务器默认 Node 20 还不支持 locked runner 所需的 `--experimental-strip-types`。这些错误都发生在无密钥测试进程中，生产候选尚未接流量。
+- **根因**：正式 release 是只含审计代码/静态文件的 Git archive，刻意没有 `.git`，其父目录也不是本地仓库根；部分测试同时验证源码跟踪集合和上一级中文项目目录，所以不能直接把 release 目录当源码 checkout。服务器已有 Node 22 构建工具，但系统默认仍是 Node 20。
+- **处置与防回归**：不向 release 添加 `.git`，不修改测试或跳过用例。部署在 build 区建立只读硬链接源码 harness、独立 Git index 和只对测试进程生效的 Git wrapper，并在 releases 根临时映射准确的项目目录；PATH 只在 runner 内显式选择已有 Node 22。13 条原失败用例先通过，最终 `817` 项全量为 `816 passed + 1 approved skip`，临时 releases 映射随后按精确 symlink/target 校验移除。以后服务器全量必须复原真实源码检出形状，不能把目录错误当代码失败，也不能为了通过测试污染生产 release。
+
+## 2026-08-12 v142.5 生产闭环：精确媒体例外不会自动跨 release，代码升级必须重新证明同一事实
+
+- **现象**：新 sidecar 已 ready/RW，新主服务仍在无流量端口启动失败，唯一 blocker 为 `private-media-registry-coverage`；旧 v142.3 继续正常承载生产。
+- **根因**：既有一条历史 registry 缺失由 release ID、缺失集合 SHA-256 和数量三重绑定。复制旧外部 env 会保留旧 release ID；新代码即使面对同一数据库/媒体也必须拒绝沿用，避免未来候选无审计继承例外。
+- **处置与防回归**：先用 v142.5 代码独立执行完整只读审计，确认 SQLite `quick_check=ok`、缺失集合 SHA 与旧证据逐字一致、unisolated/registry-missing 均为 `1`、effective pending 为 `0`、sidecar 正常，且只替换预期 release ID 后 gate 才为 `writeReady=true`。随后只在 v142.5 release 外 env 精确重绑定 release ID，digest/count/引用/文件/owner 均不改；主服务在接流前完成 startup gate。未来代码发布不得复制旧例外 ID、硬编码通过或放宽 hash/count，任何漂移都继续阻断候选而不影响仍在线的旧服务。
+
 ## 2026-08-12 v142.5 本地修复：全局图片哈希去重会把批量图文串到其他内容账号
 
 - **现象**：批量图文看板上图片显示已结束，发布时却返回 `409 发布所需任务、账号或媒体尚未完整同步`；批量发布的第一条失败后，后续可发布内容也被整批中止。
