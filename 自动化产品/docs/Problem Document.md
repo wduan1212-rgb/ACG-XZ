@@ -4,6 +4,12 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-12 v142.8 生产闭环：主服务和 sidecar 必须作为同一 release 绿色对验收
+
+- **现象**：旧 v142.7.1 始终正常承载公网，新 v142.8 主服务在无流量端口反复拒绝启动，唯一 blocker 为 `video-sidecar`。新 sidecar 首次启动又因 release 外 env 中的 `VIDEO_WORKSHOP_ROOT/WEB_DIR` 仍带另一 sibling SHA 后缀而找不到静态目录。
+- **根因**：新主服务指向旧 sidecar 端口，启动门正确拒绝 release/build ID 不一致；候选 env 又只替换了 release 标识，没有对两个 sidecar 公开路径做完整字段校验。systemd 单元语法校验不会证明外部目录存在或两个进程的 build ID 一致。
+- **处置与防回归**：候选未接流时停止其自动重启，新建独立 v142.8 sidecar 端口，逐字段修正两个已审计公开路径，再要求 main health/release、sidecar build ID/RW 和 protected readiness 同时通过后才插入新路由。以后 sibling 发布必须把 main+sidecar 当作同一对，启用前断言 `EnvironmentFile/WorkingDirectory/ROOT/WEB_DIR/端口/build ID` 全部指向同一 SHA。旧服务保持 active/RW，不得用停服或转只读来换取候选启动。
+
 ## 2026-08-12 v142.7 本地修复：小红书长度门禁不能靠截断，定时配额不能看提交日
 
 - **现象**：标题生正文偶发超过 `1000` 字时，旧后处理直接截掉尾部，可能留下半句；选择 18/19 日定时发布时，页面和服务器却按点击当天的用量拒绝，甚至在批量起草选账号阶段就提前屏蔽“今天已满”的账号。

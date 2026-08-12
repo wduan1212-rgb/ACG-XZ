@@ -1,6 +1,16 @@
 # 星阵版本记录
 
-## v142.8 - 2026-08-12（本地候选：无限画布数量、状态与共享图片稳定性）
+## v142.8 - 2026-08-12（生产：无限画布数量、状态、发布沟通与 AI 选题稳定性）
+
+### 生产部署闭环
+
+- 生产当前功能 SHA 为 `1eeae4928080206e0784732dd02a6b1c9a62b9f4`，远端分支 `codex/v141-content-governance` 已精确指向该提交，release/cache 为 `20260812-v1428-canvas-batch-stability-1`，实际 sibling release 为 `20260812-v1428-canvas-batch-stability-1-1eeae492`。新主服务/sidecar 在私有端口 `8796/8771` 完成验收后由两条首位精确路由原子接流；旧 v142.7.1 主服务和路由全程 active/RW，发布没有停服、只读或 502 窗口，移除 v142.8 路由即可回到仍在线的旧代码。
+- 只解包验签 Git archive 的代码/静态。生产 release 外私密 env 只在服务器内继承已有配置并更新 release/root/私有端口与无密钥并发参数；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 密钥都未上传、覆盖或写入 Git/release/日志。
+- 目标 Linux 锁定主服务为 `829 collected / 828 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`。release verifier 为 Phase 0 `fc07f32b452808224c35b70e8ed960afff506779f5ac22b5938ab5cd755a43dc`，ESM `61 modules / 349 edges`、closure `c02056796787fc3920a20b4a474df2c8f3cff3a2c1f179bf31717a0294eef155`，canvas `63 files / 1,771,558 bytes / 74d95401f2497d73b7bcfd9db66cd8801acd4e5fe17b867fe718ed263780e109`，runtime `65 files / 3,328,588 bytes / 1f8416ccf09a178eff51074118792b9b039a4fb37f9f776432fab48f5e46c45a`。
+- 切流前在线 SQLite v2 保护点为 `/data/dumate-studio/backups/v1428-pre-switch-20260812T224200Z`，manifest SHA-256 `7d69212e61c682855be73f18836d27d11638f703904ca50122793c6494139c99`，数据库 SHA-256 `666d14cc58cdad2e0b551ec0328134bb597279dd85ccbb6425a95ac9b00aee2d`。manifest verify、逐字节隔离 restore drill 与恢复库 `quick_check=ok` 通过；旧单元、路由和 release 外 env 的精确回滚副本保存在 `/data/dumate-studio/deployment-backups/v1428-pre-switch-20260812T224200Z`。
+- 无流量真实验收包含：同团队创作者读发布备注 200、跨团队 403；百度 AI 选题 200，返回 `5` 条搜索来源和 `1` 条完整预览；无限画布 `10/10` 后台 job 全部接受并成功，无“生成失败”错标；批量小红书核心链路的 `3:4` 生图和看图写文案均为 200，实际标题 `19` 字、正文 `426` 字且 JSON 可解析。上述 provider 调用不对未知结果重提。
+- 公网 root/health 连续 `20/20` 为 200，OpenAPI/community 为 200，匿名 state 为预期 401，根页与 Chromium DOM 均加载精确 v142.8 cache identity。最终 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，主服务和 sidecar 为 active/RW，稳定启动后日志无 Traceback/Application startup failed。用量和既有精确媒体例外仅保持 warning-only，没有让正常生产停服或转只读。
+- SQLite 保持 `48` 表且 `quick_check=ok`，总行数由新保护点的 `70,997` 增加到受控真实验收后的 `71,098`，无表或业务行异常减少。切流前后六类媒体计数/字节一致：uploads `7,213 / 13,202,672,782`，composed `1,005 / 9,011,672,060`，canvas blobs `691 / 915,749,843`，视频 projects/uploads/outputs `64/205/1,968`，对应字节 `5,183,677 / 261,056,856 / 6,571,985,070`。
 
 ### 本版范围
 
@@ -14,7 +24,7 @@
 ### 验证边界
 
 - 本地定向回归覆盖明确多图数量不缩水、单画布串行、服务器成功后本地保存失败不降级、重开项目修复历史错标、后台排队文案以及原定向编辑语义不回归。
-- 真实生产 provider、目标 Linux 锁定全量、新旧服务并行切流与切流后浏览器链路仍由部署流程独立验收；没有取得实际生产证据前，本节不把本地结果写成线上闭环。
+- 生产已完成目标 Linux 锁定全量、新旧 sibling 并行、真实 provider 及切流后公网闭环。浏览器控制通道未取得已登录会话的可见截图，因此备注/AI 选题/真实生成以同一生产 release 的已鉴权 API 和持久结果为证；不把无登录 DOM 写成完整交互验收。
 
 ## v142.7 - 2026-08-12（本地候选：生成启动同步与共享图片排队）
 
