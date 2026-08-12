@@ -114,6 +114,9 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertIn("不要根据账号定位、人设、语气或历史文风改写", source)
         self.assertIn("干货拆解", source)
         self.assertIn("自然的真人分享", source)
+        self.assertIn("你是严格 JSON 格式修复器", source)
+        self.assertIn("qianfan.topic-ideas.{phase}.json-repair", source)
+        self.assertIn('idempotency_key=f"{request_key}:{phase}:json-repair"', source)
         self.assertNotIn('"style": str(account.style or "")[:600]', source)
 
     def test_main_service_no_longer_exposes_silent_best_effort_recorders(self):

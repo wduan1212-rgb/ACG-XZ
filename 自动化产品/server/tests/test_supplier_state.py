@@ -853,6 +853,41 @@ class SupplierStateTest(unittest.TestCase):
             self.assertIsNone(err)
             self.assertEqual(len(item["remarks"]), 2)
 
+    def test_team_creators_can_read_each_others_delivery_remarks_without_cross_team_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            owner = store.add_member(
+                "创作者甲", "team_remark_owner", "local-test-pin", "editor",
+                team_id=store.INTERNAL_TEAM_ID, team_role="creator",
+            )
+            teammate = store.add_member(
+                "创作者乙", "team_remark_teammate", "local-test-pin", "editor",
+                team_id=store.INTERNAL_TEAM_ID, team_role="creator",
+            )
+            outsider = store.add_member(
+                "外部创作者", "team_remark_outsider", "local-test-pin", "user",
+            )
+            store.upsert_docs("assets", [{
+                "id": "team-delivery-remarks-1",
+                "ownerId": owner[0],
+                "byMemberId": owner[0],
+                "type": "图集",
+                "name": "团队交付图集",
+                "delivered": True,
+                "updatedAt": 100,
+            }], actor_id=owner[0])
+
+            data, err = store.delivery_remarks(
+                "team-delivery-remarks-1", teammate[0], "editor"
+            )
+            self.assertIsNone(err)
+            self.assertEqual([], data["remarks"])
+            denied, err = store.delivery_remarks(
+                "team-delivery-remarks-1", outsider[0], "editor"
+            )
+            self.assertIsNone(denied)
+            self.assertEqual("forbidden", err)
+
     def test_stale_asset_upsert_preserves_server_remark_timeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)

@@ -3050,8 +3050,50 @@ async def qianfan_topic_ideas(
             llm_response = await _call_llm(llm_body, attempt_ledger=attempts)
             llm_data = await _finish_llm_attempt(attempts, llm_response, fallback_model=LLM_MODEL)
             content = _clean_llm_text(_deep_get(llm_data, ("choices", 0, "message", "content"), default=""))
+            try:
+                parsed = _qianfan_topic_json(content)
+            except HTTPException as parse_error:
+                if parse_error.status_code != 502:
+                    raise
+                # Search and the first model call already succeeded.  Repair
+                # only the returned syntax once; do not rerun search or
+                # regenerate accounts that were never missing.
+                repair_prompt = (
+                    "你是严格 JSON 格式修复器。只修复下面文本的 JSON 语法、围栏、引号、"
+                    "转义、逗号和括号；不得新增、删减、改写或猜测任何标题、正文、标签、"
+                    "来源编号和 accountId。顶层必须是 {\"items\":[...]}，accountId 只能来自"
+                    f"这个列表：{json.dumps(expected_ids, ensure_ascii=False)}。只输出修复后的 JSON。\n"
+                    f"待修复文本：{content[:24000]}"
+                )
+                repair_body = {
+                    "model": LLM_MODEL,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": repair_prompt}],
+                    "response_format": {"type": "json_object"},
+                }
+                repair_attempts = _main_provider_attempts(
+                    _me,
+                    feature="百度搜索 AI 选题",
+                    usage_kind="llm",
+                    operation=f"qianfan.topic-ideas.{phase}.json-repair",
+                    request_value={"phase": phase, "expectedAccountIds": expected_ids},
+                    idempotency_key=f"{request_key}:{phase}:json-repair",
+                    provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"),
+                    model=LLM_MODEL,
+                    surface="batch-creation",
+                )
+                repair_response = await _call_llm(repair_body, attempt_ledger=repair_attempts)
+                repair_data = await _finish_llm_attempt(
+                    repair_attempts,
+                    repair_response,
+                    fallback_model=LLM_MODEL,
+                )
+                repaired_content = _clean_llm_text(
+                    _deep_get(repair_data, ("choices", 0, "message", "content"), default="")
+                )
+                parsed = _qianfan_topic_json(repaired_content)
             return _qianfan_normalize_topic_items(
-                _qianfan_topic_json(content),
+                parsed,
                 chunk_accounts,
                 single_account_fallback=single_account_fallback,
             )

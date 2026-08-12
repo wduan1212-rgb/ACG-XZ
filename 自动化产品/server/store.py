@@ -20093,6 +20093,17 @@ def _delivery_asset_access(item, member_id, role, conn):
         context = _supplier_access_context_locked(conn, member_id, role)
         return _supplier_asset_allowed_locked(conn, context, item)
     if role == "editor":
+        # Under the resource-scope migration the check above is the
+        # authoritative tenant boundary.  A creator must be able to discuss a
+        # delivery produced by another member of the same team, while a
+        # different team is still rejected before reaching this branch.
+        if _resource_scopes_enforced_locked(conn):
+            return True
+        actor_scope = _member_resource_scope_locked(conn, member_id)
+        for identity in (item.get("ownerId"), item.get("byMemberId")):
+            owner_scope = _member_resource_scope_locked(conn, identity)
+            if actor_scope and owner_scope and actor_scope[:2] == owner_scope[:2]:
+                return True
         if item.get("byMemberId") == member_id:
             return True
         production_id = str(item.get("productionId") or "")

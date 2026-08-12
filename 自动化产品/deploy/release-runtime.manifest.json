@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260812-v1428-canvas-batch-stability-1",
   "fileCount": 65,
-  "totalBytes": 3325559,
+  "totalBytes": 3328588,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 559153,
-      "sha256": "0db05f0222655efb33f331fa4a0f8daec5c4c5b62af05ea8ae071ff6d55d2d00"
+      "size": 561494,
+      "sha256": "2cc75c2bd852edfdef0c65646b56012e4b3a8c3680dc6cfcdd2147778f56c38d"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -321,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 921540,
-      "sha256": "21dc9103ad4e33b92b29bf877e5e7475fd9fd73afabf7577ce4ddd556fbd2889"
+      "size": 922228,
+      "sha256": "79edfad5815b5f48717de768d69037654445645e395a88e4acecd5c148af1074"
     },
     {
       "path": "tools/verify_release_contracts.py",
