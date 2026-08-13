@@ -1,18 +1,27 @@
 # 星阵版本记录
 
-## v143.2 - 2026-08-13（本地候选：发布日期语义切割与回传 Excel）
+## v143.2 - 2026-08-13（生产：发布日期语义切割与回传 Excel）
+
+### 生产部署闭环
+
+- 生产流量运行提交 `aa80a16b65564208021c84618cf3b9bf6054c2a9`，release/cache `20260813-v1432-publish-export-1`，实际 sibling release `20260813-v1432-publish-export-1-aa80a16b`。新 main/sidecar 在私有端口 `8800/8775` 完成验收后由首位精确路由接流；v143.1 main/sidecar/routing 继续 active/RW，发布没有停服或转只读，移除 v143.2 路由即可回到仍在线的旧代码。
+- 生产只解包验签代码/静态 archive，SHA-256 为 `42d2ec36dda8c6ce842c0c0d931921925f20b31bc58f790b37e137a597113e0e`。服务器内继承 release 外私密环境并只更新 release/root/私有端口；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 密钥均未上传、覆盖或写入 release。
+- 切流前 SQLite v2 保护点为 `/data/dumate-studio/backups/v1432-pre-switch-20260813T101222Z`，数据库 SHA-256 `f1c177a90f4d504bde00bb03a43c056be483af69e5d355f757dcd49eff68da37`，逻辑摘要 `d7e183350cbac7a36de934edbeacd4dfa90c31310516389889a4cc8ead2f30d1`；manifest verify、逐字节一致 restore drill 和恢复库 `quick_check=ok / 48 tables` 通过。旧代码/单元/路由/私密 env 回滚副本在 `/data/dumate-studio/deployment-backups/v1432-pre-switch-20260813T101609Z` 并已验签。
+- 目标 Linux 在正确源码形状下完成主服务 `837 passed + 1 approved skip`、sidecar `160/160`、Node `129/129`。新候选 protected readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，切流后 main/sidecar 均 active/RW、`NRestarts=0`，SQLite 保持 `quick_check=ok / 48 tables`。
+- 无流量真实验收中，无限画布 `10/10` 成功且全部有耐久 Blob；两组批量图文并行为 `3/3 + 3/3`，两次看图写文案均成功。公网登录浏览器实际打开画布耐久图、批量图文工作台和发布清单；日期区间导出生产 Excel 含 `161` 条回传数据，再导入检查通过必需列、链接、数值和公式安全。
+- 额外极压验收同时使用 `3` 个创作账号、`4` 张异形参考图（`4096×128`、`128×4096`、`48×48` 透明图和普通图）、`6` 组画布批次和 `3` 组图文。画布 `18/18` 成功、耐久 Blob `18/18` 可读且哈希全唯一，轮询无“后台任务不存在”，跨用户读取 `3/3` 被拒绝。图文已提交 `8` 张中 `7` 张成功；第 `8` 张在真实 provider 调用后发生 `ReadTimeout`，被正确保留为 `IMAGE_PROVIDER_RESULT_UNKNOWN`，第 `9` 张未再提交，未自动重试。因此常规链路通过，极压批量图文不误报全绿；剩余风险是上游长尾/结果未知，不是参数错误、后台 job 丢失或本机 CPU 瓶颈。
 
 ### 本版范围
 
 - 修复无限画布/视频工坊定制发布沿用浏览器长期草稿中的旧 `planDate`，导致 8 月 13 日仍以 8 月 6 日额度裁决的问题。发布日期语义抽到独立 `publishSchedule` 领域模块：过去或非法的草稿日期统一回到上海当天，明确选择的当天/未来日期继续保留；服务端对仍运行旧静态资源的客户端做同样归一化。账号下拉展示与提交裁决使用同一选中日期，不再用“今日”缓存展示另一日额度，也不再把缓存额度写成禁用选项；最终额度仍由服务端原子事务裁决。
 - 创作端与供应商端共用的发布清单顶部新增“导出发布回传 Excel”。点击后选择供应商回传日期区间，刷新当前可见范围内的观看量，再导出标题、账号、可点击回传链接、数值观看量、回传时间、发布人和平台；日期首尾均包含，只导出已有回传链接的内容。XLSX 由浏览器本地生成，不新增服务端导出接口、表、依赖或临时生产文件。
-- release/cache identity 更新为 `20260813-v1432-publish-export-1`。本版不调整图片供应商、无限画布或批量图文的并发/重试/后台 job 架构，不新增 schema、迁移、依赖、持久目录、权限或 Nginx；候选部署仍只允许验签代码/静态进入新 sibling release，不能覆盖 SQLite、账号、媒体、任务、认证或私密配置。
+- release/cache identity 更新为 `20260813-v1432-publish-export-1`。本版不调整图片供应商、无限画布或批量图文的并发/重试/后台 job 架构，不新增 schema、迁移、依赖、持久目录、权限或 Nginx；生产只同步验签代码/静态，不覆盖 SQLite、账号、媒体、任务、认证或私密配置。
 
 ### 验证证据
 
 - 发布/画布/批量定向回归 `166/166`；无私密锁定 Python 3.12 主服务收集 `838` 项，`837 passed + 1 approved skip`；视频 sidecar `160/160`，Node `129/129`。无限画布 typecheck、lint 和 vendor closure 校验通过；Python compileall、全部 JavaScript syntax 和 `git diff --check` 通过。
 - release verifier 通过：Phase 0 `8db29d229ac79bf7661ee3dd3da70a7babcf2db54a105b305aaa760f7867de7f`，ESM graph `63 modules / 354 edges / 485d4bfc075280e191c2e4f65c08a128344ad015d42bb2569f7bdaf000894fc0`，closure `89d6b9fcbf0312b6039e7d60af5204a2e4da943d81e3e531747a76fb4e4b0ec9`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,927 bytes / 882cbb36837e4cfb57f1f90cda823728ea697fe0d2f2beeefc86832e0f7c2a98`。
-- 脱敏 Excel 经 Artifact Tool 导入、结构/数据/公式检查、渲染、再导出与重新导入；区间过滤、数值观看量、日期单元格、外链、冻结表头和公式安全均通过。此处仅为本地候选证据；目标 Linux、无流量 sibling、真实发布与公网浏览器验收仍须在最终提交后完成，未提前写成生产结论。
+- 脱敏 Excel 经 Artifact Tool 导入、结构/数据/公式检查、渲染、再导出与重新导入；区间过滤、数值观看量、日期单元格、外链、冻结表头和公式安全均通过。生产浏览器实际下载的 `161` 条回传明细又经同一工具重新导入，必需表头、数据行、数值观看量和公式错误扫描均通过。
 
 ## v143.1 - 2026-08-13（生产：画布版本边界与批量图文不拒绝排队）
 
