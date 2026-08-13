@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v143.1 - 2026-08-13（本地候选：画布版本边界与批量图文不拒绝排队）
+## v143.1 - 2026-08-13（生产：画布版本边界与批量图文不拒绝排队）
+
+### 生产部署闭环
+
+- 生产流量运行功能 SHA `6e0d0fed7d3f323984f011edc18cfcd58366c4dc`，分支 `codex/v141-content-governance`，release/cache `20260813-v1431-creation-queue-stability-1`，实际 sibling release `20260813-v1431-creation-queue-stability-1-6e0d0fed`。新主服务/sidecar 在私有端口 `8799/8774` 完成验收后由首位精确路由接流；v143.0 主服务、sidecar 和路由继续 active/RW，发布全程没有停服或转只读，移除 v143.1 路由即可回到仍在线的旧代码。
+- 只解包验签 Git archive，SHA-256 为 `e2d247cb418570ef5d61628ed49b2f1a4eb3b0bd518d40d77d82657404439333`。release 外私密环境只在服务器内继承并更新 release/root/私有端口；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 密钥均未上传、覆盖或写入 Git、release、日志。
+- 切流前 SQLite v2 保护点为 `/data/dumate-studio/backups/v1431-pre-switch-20260813T081127Z`，manifest SHA-256 `550345de4a846d55f57b44e48775127eacbf5bb49355fcff6d56d24d6faff667`，数据库 SHA-256 `29b98e9f57685e7dc5e8fc28fc1cfa15e29e0a6c66a795f7a159bbba09b7ef05`，逻辑摘要 `fede4db2e0bfef5da9321bd56c0a9a64056c3377896cfb986a94cae09fa8fb2d`。manifest verify、逐字节隔离 restore drill 和恢复库 `quick_check=ok / 48 tables` 均通过；v143.0 单元、路由脚本和私密 env 的验签回滚副本保存在 `/data/dumate-studio/deployment-backups/v1431-pre-switch-20260813T081412Z`。
+- 目标 Linux 在正确源码检出形状下完成主服务 `835` 项、`OK (skipped=1)`，sidecar `160/160`、Node `129/129`；release verifier 与下方哈希逐字一致。新旧两代 main/sidecar/routing 全部 active/RW，新候选和旧回滚进程 `NRestarts=0`，protected readiness 连续三次为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`。
+- 无流量真实验收一次原子登记 `10` 个无限画布后台 job，共用 `2` 张参考图，最终 `10/10 succeeded`、每张 `usedRefs=2` 且都有一个持久 Blob。并行发起两组批量图文核心生图，各 `3/3` 返回有效图片，合计 `6/6` HTTP 200、`503=0`；两组看图写文案均为 HTTP 200 和可解析 JSON，标题/正文长度分别为 `20/207` 与 `10/195`。验收没有重提历史成员任务，也没有自动重提任何未知 provider 结果。
+- 切流后公网 root、health、OpenAPI、community posts 各连续 `20/20` 为 200，Chrome 冷启动 DOM 精确加载 v143.1 cache identity。SQLite 保持 `48` 表、`quick_check=ok`，逐表无减少，总行数在受控验收和同期正常业务下由 `77,156→77,343`；uploads `7,695→7,707`，composed `1,005`、canvas blobs `741`、视频 projects/uploads/outputs `64/205/1,968` 均不减，六类媒体字节也无减少。
 
 ### 本版范围
 
@@ -8,9 +17,9 @@
 - 王端当次两个图文账号均明确要求 `3` 张，服务器实际状态为一条 `3/3` 完成，另一条停在 `1 done / 1 loading / 1 idle`。未推进的第二张没有 provider receipt，与同时的 `240s` 排队后 HTTP 503 一致。本版撤掉“等待超时就拒绝创作”：服务端仍按上游真实容量运行两个 worker，后来任务在统一队列内等待，不再在调用上游前返回 503。浏览器的两个账号 production 独立推进，新建和刷新恢复不再被第一个账号串行堵住。
 - release/cache identity 更新为 `20260813-v1431-creation-queue-stability-1`。本版不新增 schema、迁移、依赖或持久目录；部署仍只允许验签代码/静态进入新 sibling release，不覆盖 SQLite、账号、媒体、认证或 provider 私密配置。
 
-### 本地验证
+### 验证证据
 
-- 画布/批量/排队定向回归 `81/81`、主服务全量 `839 passed + 1 skipped`、工作区 Node `129/129` 通过；无限画布 `typecheck` / `lint` / `build:embed` / vendor check 通过。release verifier 为 Phase 0 `1ec88d63191fe99c8a1b247d340a7462c2e14c8562a5a040fe4ecf3ec00c290f`，ESM closure `5df12b717799c17445cae3145c7b71162432ea32f1ef9eb777a5f437663ffc1c`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,797 bytes / 1a22eb0b69cf1718398f7baed4f552ff21b104c2b2a0beac8ec09e8640e2b121`。此处仅记本地 fake-provider/源码契约，不冒充真实生图或生产部署结论。
+- 画布/批量/排队定向回归 `81/81`、本地主服务全量 `839 passed + 1 skipped`、工作区 Node `129/129` 通过；无限画布 `typecheck` / `lint` / `build:embed` / vendor check 通过。release verifier 为 Phase 0 `1ec88d63191fe99c8a1b247d340a7462c2e14c8562a5a040fe4ecf3ec00c290f`，ESM closure `5df12b717799c17445cae3145c7b71162432ea32f1ef9eb777a5f437663ffc1c`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,797 bytes / 1a22eb0b69cf1718398f7baed4f552ff21b104c2b2a0beac8ec09e8640e2b121`。本地、目标 Linux、真实 provider、绿色切流和生产数据对账现已分别闭环。
 
 ## v143.0 - 2026-08-13（生产：图文批次原子起跑与共享生图公平排队）
 
