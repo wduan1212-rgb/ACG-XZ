@@ -11,7 +11,7 @@
 ### 验证证据
 
 - 发布/画布/批量定向回归 `166/166`；无私密锁定 Python 3.12 主服务收集 `838` 项，`837 passed + 1 approved skip`；视频 sidecar `160/160`，Node `129/129`。无限画布 typecheck、lint 和 vendor closure 校验通过；Python compileall、全部 JavaScript syntax 和 `git diff --check` 通过。
-- release verifier 通过：Phase 0 `9a02ae342e5f66e14577a54a780289e94ad4b94cd6ad265f6d859d4c3dd6f145`，ESM graph `63 modules / 354 edges / 485d4bfc075280e191c2e4f65c08a128344ad015d42bb2569f7bdaf000894fc0`，closure `44ca3ade86ad473ff7c7c2eb40fd30ce5ea3644148fd218c770fc19000d91dbd`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,927 bytes / 882cbb36837e4cfb57f1f90cda823728ea697fe0d2f2beeefc86832e0f7c2a98`。
+- release verifier 通过：Phase 0 `8db29d229ac79bf7661ee3dd3da70a7babcf2db54a105b305aaa760f7867de7f`，ESM graph `63 modules / 354 edges / 485d4bfc075280e191c2e4f65c08a128344ad015d42bb2569f7bdaf000894fc0`，closure `89d6b9fcbf0312b6039e7d60af5204a2e4da943d81e3e531747a76fb4e4b0ec9`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,927 bytes / 882cbb36837e4cfb57f1f90cda823728ea697fe0d2f2beeefc86832e0f7c2a98`。
 - 脱敏 Excel 经 Artifact Tool 导入、结构/数据/公式检查、渲染、再导出与重新导入；区间过滤、数值观看量、日期单元格、外链、冻结表头和公式安全均通过。此处仅为本地候选证据；目标 Linux、无流量 sibling、真实发布与公网浏览器验收仍须在最终提交后完成，未提前写成生产结论。
 
 ## v143.1 - 2026-08-13（生产：画布版本边界与批量图文不拒绝排队）
