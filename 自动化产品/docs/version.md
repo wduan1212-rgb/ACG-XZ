@@ -1,6 +1,16 @@
 # 星阵版本记录
 
-## v143.0 - 2026-08-13（本地候选：图文批次原子起跑与共享生图公平排队）
+## v143.0 - 2026-08-13（生产：图文批次原子起跑与共享生图公平排队）
+
+### 生产部署闭环
+
+- 生产流量运行功能 SHA `f95e9f9dcb492022137dbf8b9b8f1f249cd38c6e`，分支 `codex/v141-content-governance`，release/cache `20260813-v1430-batch-durable-start-1`，实际 sibling release `20260813-v1430-batch-durable-start-1-f95e9f9d`。新主服务/sidecar 在私有端口 `8798/8773` 完成验收后由首位精确路由原子接流；v142.9 主服务、sidecar 和路由继续 active/RW，发布全程没有停服、只读或 502 窗口，移除 v143.0 路由即可回到仍在线的兼容旧代码。
+- 只解包验签 Git archive，SHA-256 为 `3ddcd28e88fd29340fc75d986061e002bd52ba979fc81c0f2c3260032d85ca09`。release 外私密环境只在服务器内继承并更新 release/root/私有端口和非密钥排队窗口；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 密钥均未上传、覆盖或写入 Git、release、日志。
+- 切流前 SQLite v2 保护点为 `/data/dumate-studio/backups/v1430-pre-switch-20260813T051106Z`，manifest SHA-256 `977b8884a6c56ddf025a550b18fd0bf5858f432b8acb53a42dda3112dea15105`，数据库 SHA-256 `d2e9e12bca24ca88eafb29d99372d94e753a119844df97d2a199f58b8c1f247a`，逻辑摘要 `404b7c8598bfba710fddb6dd622464b1f379baf432b60c01c13a3026c9142d14`。manifest verify、逐字节隔离 restore drill 和恢复库 `quick_check=ok` 均通过。
+- 目标 Linux 锁定主服务为 `833 collected / 832 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`，release verifier 与下方候选哈希逐字一致；新旧两代 main/sidecar 全部 active/RW，v143.0 两个进程 `NRestarts=0`，最终 `ready=true / writeReady=true / startupVerified=true / blockers=[]`。
+- 公网 Chromium 加载精确 v143.0 cache identity。受控普通账号从浏览器真实提交一张无限画布并成功得到耐久 Blob 与“海报 01”正常名称；切流后的真实生产流量另有两条小红书图文各 `3/3` 图片完成，batch 根文档存在且包含对应 production，真实图片提交/operation 查询均返回 200。409 仅为同一 operation key 的安全重放，随后读取已有成功结果，没有重复调用未知 provider。
+- 王端原批次的两个 production、标题、文案、提示词和 `2` 张成功图保持原样，另外 `4` 张仍证明未调用 provider；部署没有伪造批次或冒用成员身份。本人加载 v143.0 后由 owner-scoped 恢复器补建原 batchId/session，服务器确认后再从未完成项续跑；已成功和结果未知项不重提。
+- 公网 root、health、OpenAPI、community posts 各连续 `20/20` 为 200。SQLite 保持 `48` 表、`quick_check=ok`，总行数在受控验收和同期正常业务下由 `73,903→73,970`；uploads `7,455→7,461`、canvas blobs `726→727`，composed `1,005` 与视频 projects/uploads/outputs `64/205/1,968` 均不减，原生产数据没有被本地状态覆盖。
 
 ### 本版范围
 
@@ -9,9 +19,9 @@
 - 图文批次的新建与水合恢复均只占一个共享图片通道，不再由一个 96 张大批次同时占满两个全站槽位。共享队列默认等待窗口由 `120s` 调整为 `240s`，与 `270s` provider 上限合计仍小于浏览器 `570s` 安全窗口；等待超时继续明确标记 `providerCalled=false`，不会把未知供应商结果重提。
 - release/cache identity 更新为 `20260813-v1430-batch-durable-start-1`。本版不新增 schema、迁移、依赖、持久目录、权限或 Nginx 变更；生产只允许同步验签代码/静态和 release 外非密钥排队参数，不能覆盖 SQLite、账号、媒体、任务、认证或 provider 配置。
 
-### 本地验证边界
+### 验证证据
 
-- 图文批次/水合/队列定向回归为 `36/36`；本地无私密锁定主服务为 `833 collected / 832 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`，Python compile、JS syntax、diff check 与 release verifier 通过。目标 Linux 锁定全量、旧服务持续在线的 sibling 启动、真实图文续跑与公网切流仍属于部署阶段证据，完成前不写成生产事实。
+- 图文批次/水合/队列定向回归为 `36/36`；本地与目标 Linux 无私密锁定主服务均为 `833 collected / 832 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`，Python compile、JS syntax、diff check 与 release verifier 通过。旧服务持续在线的 sibling 启动、真实画布、真实图文续跑和公网切流均已完成生产闭环。
 - release verifier 为 Phase 0 `fdba66b026307306d73065c06d0b6c6cb9529845e6b3aac1dab01ca9cfef43e8`，ESM `61 modules / 349 edges`、closure `b572143041cb367925a2e1c136388aa05b3237e04a06097e59c6a6aa05cc2761`，canvas `63 files / 1,772,596 bytes / 6ebf1da77060e6e9752cbb87bed9657afaf2dc0f4e1563a039b8e05bfd3edb72`，runtime `65 files / 3,336,016 bytes / 069c2a8d40ac822881081f4fd86e1bde9099f53d7ea14c7708ee1d54799ec44e`。
 
 ## v142.9 - 2026-08-13（生产：无限画布整批原子登记与页面中断恢复）
