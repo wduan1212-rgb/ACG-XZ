@@ -37,7 +37,7 @@ app.mount("/outputs", StaticFiles(directory=settings.outputs_dir), name="outputs
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 VIDEO_WORKSHOP_CONTRACT_VERSION = "video-workshop-v137-read-only-1"
-VIDEO_WORKSHOP_BUILD_ID = "20260813-v1429-canvas-durable-batch-1"
+VIDEO_WORKSHOP_BUILD_ID = "20260813-v1430-batch-durable-start-1"
 
 
 def _runtime_read_only() -> bool:

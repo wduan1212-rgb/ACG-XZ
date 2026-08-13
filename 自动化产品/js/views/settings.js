@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260813-v1429-canvas-durable-batch-1";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260813-v1430-batch-durable-start-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260813-v1429-canvas-durable-batch-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260813-v1430-batch-durable-start-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];

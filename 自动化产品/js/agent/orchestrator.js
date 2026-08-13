@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260813-v1429-canvas-durable-batch-1";
+import { AI } from "../api/ai.js?v=20260813-v1430-batch-durable-start-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1429-canvas-durable-batch-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1429-canvas-durable-batch-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1430-batch-durable-start-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1430-batch-durable-start-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1429-canvas-durable-batch-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1430-batch-durable-start-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1429-canvas-durable-batch-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1430-batch-durable-start-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -36,6 +36,7 @@ const COVER_STYLE_HINTS = [
 ];
 const activeImageRecoveries = new Set();
 const activeHydrationDrafts = new Set();
+const activeBatchRegistrationRecoveryIds = new Set();
 const activeHydrationCompositions = new Set();
 const activeComposeRequests = new Map();
 const HYDRATION_REDRAFT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -1066,13 +1067,128 @@ export function restoreMissingBatchSessions({ persist = true } = {}) {
     state.ui.activeSessionId = mySessions()[0]?.id || null;
   }
   if (persist) {
-    void persistRecoveredDocuments("sessions", ...recovered).catch(error => {
-      console.warn("批次会话服务器恢复失败", error);
-      notify("已在本机找回缺失批次，但服务器暂未确认。稍后刷新时会再次尝试恢复。", "warn");
-    });
+    void persistRecoveredDocuments("sessions", ...recovered)
+      .then(() => resumeActiveBatches())
+      .catch(error => {
+        console.warn("批次会话服务器恢复失败", error);
+        notify("已在本机找回缺失批次，但服务器暂未确认。稍后刷新时会再次尝试恢复。", "warn");
+      });
     save("meta");
   }
   emit("agent:session");
+  return recovered;
+}
+
+const ORPHAN_BATCH_RECOVERY_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+function recoveredBatchPhase(productions) {
+  if (productions.some(item => (
+    ["pending", "running"].includes(String(item?.stageStatus || ""))
+    && !["review", "delivered"].includes(String(item?.stage || ""))
+  ))) return "generating";
+  if (productions.length && productions.every(item => item?.stage === "delivered")) return "done";
+  return "review";
+}
+
+/* A production batch is a recovery root, not disposable UI state.  Older
+   clients could explicitly persist productions while the debounced whole-
+   collection batch write lost a reference-order race.  Rebuild only recent,
+   current-owner, non-delivered orphan groups from their immutable batchId;
+   never submit a provider until the reconstructed batch and session receive
+   explicit server acknowledgements. */
+export function restoreMissingBatchesFromProductions({ persist = true } = {}) {
+  const ownerId = String(state.ui.currentMemberId || "");
+  const known = new Set(state.batches.map(batch => String(batch?.id || "")).filter(Boolean));
+  const groups = new Map();
+  const now = Date.now();
+  state.productions.forEach(production => {
+    const batchId = String(production?.batchId || "");
+    const productionOwner = String(production?.ownerId || "");
+    const createdAt = Number(production?.createdAt || production?.updatedAt || 0);
+    if (!batchId || known.has(batchId) || !ownerId || productionOwner !== ownerId) return;
+    if (!createdAt || now - createdAt > ORPHAN_BATCH_RECOVERY_MAX_AGE_MS) return;
+    if (production?.stage === "delivered") return;
+    const rows = groups.get(batchId) || [];
+    rows.push(production);
+    groups.set(batchId, rows);
+  });
+  const recovered = [];
+  for (const [batchId, productions] of groups) {
+    productions.sort((a, b) => (
+      Number(a?.createdAt || 0) - Number(b?.createdAt || 0)
+      || Number(a?.batchItemIndex || 0) - Number(b?.batchItemIndex || 0)
+      || String(a?.id || "").localeCompare(String(b?.id || ""))
+    ));
+    const first = productions[0] || {};
+    const createdAt = Math.min(...productions.map(item => Number(item?.createdAt || item?.updatedAt || now)));
+    const updatedAt = Math.max(...productions.map(item => Number(item?.updatedAt || item?.createdAt || createdAt)));
+    const accountIds = [...new Set(productions.map(item => item?.accountId).filter(Boolean))];
+    const imageCount = Math.max(1, ...productions.map(item => (
+      Number(item?.artifacts?.script?.imageCount || 0)
+      || (Array.isArray(item?.artifacts?.images?.items) ? item.artifacts.images.items.length : 0)
+    )));
+    const contentKind = productions.every(item => item?.mode === "图文") ? "image" : "material";
+    const batch = {
+      id: batchId,
+      sessionId: `recovered-${batchId}`,
+      ownerId,
+      goal: String(first?.title || first?.topic || "已恢复批次"),
+      topic: String(first?.title || first?.topic || "已恢复批次"),
+      content: String(first?.topic || first?.title || ""),
+      creativeMode: "custom",
+      contentKind,
+      topicMode: "fixed",
+      productId: String(first?.artifacts?.script?.productId || "dumate"),
+      accountIds,
+      accountCounts: Object.fromEntries(accountIds.map(accountId => [
+        accountId,
+        productions.filter(item => item?.accountId === accountId).length,
+      ])),
+      accountImageCounts: Object.fromEntries(accountIds.map(accountId => [accountId, imageCount])),
+      accountProductIds: {}, accountContents: {}, accountCustomCopyModes: {},
+      accountCopyTitles: {}, accountCopyBodies: {}, accountImageCreationModes: {},
+      accountImagePrompts: {}, accountSingleImageTitles: {}, accountRefAssetIds: {},
+      sharedRefAssetIds: [], coverRefAssetIds: [],
+      referenceSelectionId: String(first?.referenceSelectionId || `recovered-${batchId}`),
+      productionIds: productions.map(item => item.id),
+      plannedTotal: productions.length,
+      imageCount,
+      perAccountCount: Math.max(1, ...accountIds.map(accountId => productions.filter(item => item?.accountId === accountId).length)),
+      phase: recoveredBatchPhase(productions),
+      autoAdvance: true,
+      paused: persist,
+      recoveryRegistrationPending: persist,
+      recoveredFromOrphanProductions: true,
+      createdAt,
+      updatedAt,
+    };
+    state.batches.push(batch);
+    known.add(batchId);
+    recovered.push(batch);
+  }
+  if (!recovered.length) return recovered;
+  emit("change", { collections: ["batches"], phase: "orphan-batch-recovery" });
+  if (!persist) return recovered;
+  void (async () => {
+    for (const batch of recovered) await persistRecoveredDocuments("batches", batch);
+    const sessions = restoreMissingBatchSessions({ persist: false });
+    if (sessions.length) await persistRecoveredDocuments("sessions", ...sessions);
+    for (const batch of recovered) {
+      batch.paused = false;
+      delete batch.recoveryRegistrationPending;
+      batch.updatedAt = Date.now();
+      await persistRecoveredDocuments("batches", batch);
+    }
+    resumeActiveBatches();
+  })().catch(error => {
+    recovered.forEach(batch => {
+      batch.paused = true;
+      batch.recoveryRegistrationPending = true;
+      batch.recoveryError = String(error?.message || error || "批次恢复登记失败");
+    });
+    save("batches");
+    console.warn("孤立批次服务器恢复失败", error);
+  });
   return recovered;
 }
 /* 删除整批（连同未交付的在制产物与其 job） */
@@ -3667,22 +3783,46 @@ export async function startBatch(plan, session) {
     save("batches");
     throw error;
   }
+  try {
+    // Productions must exist first because the batch carries their immutable
+    // references.  Unlike debounced whole-collection save(), this single-doc
+    // checkpoint is awaited and cannot be rejected by an unrelated stale row.
+    await persistRecoveredDocuments("batches", batch);
+  } catch (error) {
+    batch.paused = true;
+    batch.registrationError = String(error?.message || error || "批次服务器登记失败");
+    save("batches", "productions");
+    throw new Error(`批次尚未完成服务器登记，已保留任务，请刷新后自动恢复；不要重复新建。${batch.registrationError ? ` ${batch.registrationError}` : ""}`);
+  }
   save("batches", "productions");
   emit("batch:update", batch);
   addMsg(session, { role: "agent", type: "progress", payload: { batchId: batch.id } });
+  try {
+    await persistRecoveredDocuments("sessions", session);
+  } catch (error) {
+    batch.paused = true;
+    batch.recoveryRegistrationPending = true;
+    batch.registrationError = String(error?.message || error || "任务板会话登记失败");
+    await persistRecoveredDocuments("batches", batch).catch(() => null);
+    throw new Error("任务板会话尚未完成服务器登记，批次已安全保留；请刷新后自动恢复，不要重复新建。");
+  }
   notify("agent", `批次启动：「${batch.topic}」`, `${accounts.length} 个账号 · 共 ${batch.productionIds.length} 条内容`);
   // 起草过程播报到思考面板
   emit("agent:thinking", { sessionId: session.id, value: true });
   think(`并发起草 ${accounts.length} 个账号 · ${batch.productionIds.length} 条内容…`, session.id);
   let drafted = 0;
   const total = batch.productionIds.length;
+  // A single image batch occupies only one shared image lane.  Large batches
+  // therefore queue their own cards instead of monopolising both server slots
+  // and timing out another creator's canvas or batch request.
+  const draftConcurrency = batch.contentKind === "image" ? 1 : 2;
   runPool(batchProds(batch), async p => {
     while (batch.paused && state.batches.includes(batch)) await delay(250);
     if (!state.batches.includes(batch)) return;
     await draftOne(p, batch);
     drafted++;
     think(`起草完成 ${drafted}/${total} · ${accountById(p.accountId)?.name || ""}`, session.id);
-  }, 2).then(() => {
+  }, draftConcurrency).then(() => {
     emit("agent:thinking", { sessionId: session.id, value: false });
     evaluate(batch.id);
   }).catch(err => {
@@ -3997,7 +4137,45 @@ async function resumeHydratedDraft(p, batch) {
 
 /* 启动恢复：把中断的起草接着跑 */
 export function resumeActiveBatches() {
-  restoreMissingBatchSessions();
+  const orphanBatches = restoreMissingBatchesFromProductions();
+  if (orphanBatches.length) return 0;
+  const recoveredSessions = restoreMissingBatchSessions();
+  if (recoveredSessions.length) return 0;
+  const pendingRegistrationBatches = activeBatches().filter(batch => (
+    batch.paused && batch.recoveryRegistrationPending
+  ));
+  const pendingRegistrations = pendingRegistrationBatches.filter(batch => (
+    !activeBatchRegistrationRecoveryIds.has(batch.id)
+  ));
+  if (pendingRegistrationBatches.length) {
+    pendingRegistrations.forEach(batch => activeBatchRegistrationRecoveryIds.add(batch.id));
+    if (!pendingRegistrations.length) return 0;
+    void (async () => {
+      try {
+        for (const batch of pendingRegistrations) {
+          const session = state.sessions.find(item => item.id === batch.sessionId);
+          if (!session) throw new Error(`恢复批次 ${batch.id} 时缺少会话`);
+          await persistRecoveredDocuments("sessions", session);
+          batch.paused = false;
+          delete batch.recoveryRegistrationPending;
+          delete batch.registrationError;
+          batch.updatedAt = Date.now();
+          await persistRecoveredDocuments("batches", batch);
+        }
+        resumeActiveBatches();
+      } finally {
+        pendingRegistrations.forEach(batch => activeBatchRegistrationRecoveryIds.delete(batch.id));
+      }
+    })().catch(error => {
+      pendingRegistrations.forEach(batch => {
+        batch.paused = true;
+        batch.recoveryRegistrationPending = true;
+        batch.registrationError = String(error?.message || error || "批次服务器登记恢复失败");
+      });
+      console.warn("批次服务器登记恢复失败", error);
+    });
+    return 0;
+  }
   settleHydratedVideoProductions();
   let resumed = 0;
   const batches = activeBatches();
@@ -4049,7 +4227,8 @@ export function resumeActiveBatches() {
     }
     const stuck = [...new Set([...staticStuck, ...hydration.draft])];
     if (stuck.length) {
-      runPool(stuck, p => resumeHydratedDraft(p, b), 2).then(() => evaluate(b.id));
+      const recoveryConcurrency = b.contentKind === "image" ? 1 : 2;
+      runPool(stuck, p => resumeHydratedDraft(p, b), recoveryConcurrency).then(() => evaluate(b.id));
       resumed += stuck.length;
     }
     const imageStuck = hydration.images;

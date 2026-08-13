@@ -39,7 +39,7 @@ class ProviderStartupRaceTests(unittest.TestCase):
     def test_shared_image_queue_waits_for_a_normal_busy_provider_window(self):
         main_source = (ROOT / "server" / "main.py").read_text("utf-8")
         self.assertIn(
-            'IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)',
+            'IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 240)',
             main_source,
         )
         self.assertIn(

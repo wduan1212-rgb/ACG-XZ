@@ -1,10 +1,10 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, refreshRemoteCollections, refreshDeliveryMetrics } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260813-v1429-canvas-durable-batch-1";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260813-v1430-batch-durable-start-1";
 import * as remote from "../core/remote.js";
 import { accountAvatarUrl } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260813-v1429-canvas-durable-batch-1";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260813-v1430-batch-durable-start-1";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 

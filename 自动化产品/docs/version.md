@@ -1,5 +1,19 @@
 # 星阵版本记录
 
+## v143.0 - 2026-08-13（本地候选：图文批次原子起跑与共享生图公平排队）
+
+### 本版范围
+
+- 修复图文工坊“任务一直待处理，刷新后批次不存在”。生产只读审计确认两条王端图文 production、标题、文案、图片提示词和两个已成功图片均仍在，但对应 batch 文档没有落库；其余四张没有 provider receipt，证明从未调用供应商，不是上游仍在生成或结果未知。
+- 新建批次先显式提交全部 production，再以单文档增量接口等待 batch 和 session 两次服务器确认；任一确认失败都保留任务并暂停 worker，绝不在只存在浏览器快照时开始付费生成。刷新水合会从最近十四天、当前 owner、未交付且 owner 明确的孤立 production 按原 batchId 重建最小批次和进度会话；重建批次仍须服务器确认后才续跑，已成功图片不重跑、结果未知不自动重提。
+- 图文批次的新建与水合恢复均只占一个共享图片通道，不再由一个 96 张大批次同时占满两个全站槽位。共享队列默认等待窗口由 `120s` 调整为 `240s`，与 `270s` provider 上限合计仍小于浏览器 `570s` 安全窗口；等待超时继续明确标记 `providerCalled=false`，不会把未知供应商结果重提。
+- release/cache identity 更新为 `20260813-v1430-batch-durable-start-1`。本版不新增 schema、迁移、依赖、持久目录、权限或 Nginx 变更；生产只允许同步验签代码/静态和 release 外非密钥排队参数，不能覆盖 SQLite、账号、媒体、任务、认证或 provider 配置。
+
+### 本地验证边界
+
+- 图文批次/水合/队列定向回归为 `36/36`；本地无私密锁定主服务为 `833 collected / 832 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`，Python compile、JS syntax、diff check 与 release verifier 通过。目标 Linux 锁定全量、旧服务持续在线的 sibling 启动、真实图文续跑与公网切流仍属于部署阶段证据，完成前不写成生产事实。
+- release verifier 为 Phase 0 `fdba66b026307306d73065c06d0b6c6cb9529845e6b3aac1dab01ca9cfef43e8`，ESM `61 modules / 349 edges`、closure `b572143041cb367925a2e1c136388aa05b3237e04a06097e59c6a6aa05cc2761`，canvas `63 files / 1,772,596 bytes / 6ebf1da77060e6e9752cbb87bed9657afaf2dc0f4e1563a039b8e05bfd3edb72`，runtime `65 files / 3,336,016 bytes / 069c2a8d40ac822881081f4fd86e1bde9099f53d7ea14c7708ee1d54799ec44e`。
+
 ## v142.9 - 2026-08-13（生产：无限画布整批原子登记与页面中断恢复）
 
 ### 生产部署闭环

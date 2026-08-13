@@ -182,7 +182,7 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # large multi-reference payloads to the current upstream at once.  A caller
 # may still override this operational ceiling explicitly.
 IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)
-IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 120)
+IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 240)
 IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
 IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS = _positive_env_int(
     "IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS", 270

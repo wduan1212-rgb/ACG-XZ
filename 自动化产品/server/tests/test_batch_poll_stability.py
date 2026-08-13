@@ -240,6 +240,65 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertEqual(result["batchId"], "batch-preserved")
         self.assertTrue(result["tasksUntouched"])
 
+    def test_recent_orphan_productions_rebuild_one_paused_batch_before_provider_resume(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { restoreMissingBatchesFromProductions, restoreMissingBatchSessions } = await import("./js/agent/orchestrator.js");
+            const now = Date.now();
+            state.ui.currentMemberId = "creator-one";
+            state.ui.activeSessionId = null;
+            state.sessions = [];
+            state.batches = [];
+            state.productions = [{
+              id:"orphan-a", batchId:"missing-batch", ownerId:"creator-one", accountId:"account-a",
+              mode:"图文", stage:"images", stageStatus:"pending", title:"保留的任务板",
+              createdAt:now - 2000, updatedAt:now - 1000, batchItemIndex:1,
+              artifacts:{ script:{ productId:"dumate", imageCount:3 }, images:{ items:[
+                { prompt:"a", assetId:"asset-a", status:"done" },
+                { prompt:"b", assetId:null, status:"pending" },
+                { prompt:"c", assetId:null, status:"idle" }
+              ] } }
+            }, {
+              id:"orphan-b", batchId:"missing-batch", ownerId:"creator-one", accountId:"account-b",
+              mode:"图文", stage:"images", stageStatus:"pending", title:"第二条",
+              createdAt:now - 1900, updatedAt:now - 900, batchItemIndex:1,
+              artifacts:{ script:{ productId:"dumate", imageCount:3 }, images:{ items:[] } }
+            }, {
+              id:"other-owner", batchId:"foreign-batch", ownerId:"creator-two", accountId:"account-x",
+              mode:"图文", stage:"images", stageStatus:"pending", createdAt:now, updatedAt:now, artifacts:{}
+            }, {
+              id:"delivered-orphan", batchId:"delivered-batch", ownerId:"creator-one", accountId:"account-a",
+              mode:"图文", stage:"delivered", stageStatus:"done", createdAt:now, updatedAt:now, artifacts:{}
+            }];
+            const first = restoreMissingBatchesFromProductions({ persist:false });
+            const second = restoreMissingBatchesFromProductions({ persist:false });
+            const batch = state.batches.find(item => item.id === "missing-batch");
+            const sessions = restoreMissingBatchSessions({ persist:false });
+            console.log(JSON.stringify({
+              first:first.length,
+              second:second.length,
+              batch,
+              session:sessions[0],
+              foreign:Boolean(state.batches.find(item => item.id === "foreign-batch")),
+              delivered:Boolean(state.batches.find(item => item.id === "delivered-batch"))
+            }));
+            """
+        )
+        self.assertEqual(result["first"], 1)
+        self.assertEqual(result["second"], 0)
+        self.assertEqual(result["batch"]["productionIds"], ["orphan-a", "orphan-b"])
+        self.assertEqual(result["batch"]["accountIds"], ["account-a", "account-b"])
+        self.assertEqual(result["batch"]["imageCount"], 3)
+        self.assertEqual(result["batch"]["phase"], "generating")
+        self.assertEqual(result["session"]["messages"][0]["payload"]["batchId"], "missing-batch")
+        self.assertFalse(result["foreign"])
+        self.assertFalse(result["delivered"])
+
     def test_deleted_batch_session_marker_is_never_rebuilt(self):
         result = self.run_node(
             """

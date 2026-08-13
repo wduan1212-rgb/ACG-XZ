@@ -526,10 +526,14 @@ class BatchReferenceSelectionTest(unittest.TestCase):
 
     def test_batch_confirm_has_visible_busy_state_and_sync_error_recovery(self):
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
         self.assertIn('act.setAttribute("aria-busy", "true")', view)
         self.assertIn('act.innerHTML = `${icon("loader", 14)} 正在启动…`', view)
         self.assertIn('toast(err?.message ? `批量任务启动失败：${err.message}`', view)
         self.assertIn('act.removeAttribute("aria-busy")', view)
+        self.assertIn('await persistRecoveredDocuments("batches", batch)', orchestrator)
+        self.assertIn('await persistRecoveredDocuments("sessions", session)', orchestrator)
+        self.assertIn('const draftConcurrency = batch.contentKind === "image" ? 1 : 2', orchestrator)
 
     def test_digital_human_queue_and_remote_batch_hydration_match_v120_capacity(self):
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")
