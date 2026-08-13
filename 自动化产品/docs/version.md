@@ -1,6 +1,16 @@
 # 星阵版本记录
 
-## v142.9 - 2026-08-13（本地候选：无限画布整批原子登记与页面中断恢复）
+## v142.9 - 2026-08-13（生产：无限画布整批原子登记与页面中断恢复）
+
+### 生产部署闭环
+
+- 生产流量运行功能 SHA `7f4f09501e81c40c9f7122138dcbeacbc4fe73ff`，分支 `codex/v141-content-governance`，release/cache `20260813-v1429-canvas-durable-batch-1`，实际 sibling release `20260813-v1429-canvas-durable-batch-1-7f4f0950`。新主服务/sidecar 在私有端口 `8797/8772` 完成验收后由首位精确路由原子接流；旧 v142.8 主服务、sidecar 和路由全程 active/RW，发布没有停服、只读或 502 窗口，移除 v142.9 路由即可回到仍在线的兼容旧代码。
+- 只解包验签 Git archive，SHA-256 为 `041cd8b5ca08a284992fcad6ad91216f6b210fa886882e76fa631ab54ef30a1c`。release 外私密环境只在服务器内继承并更新 release/root/私有端口；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 密钥均未上传、覆盖或写入 Git、release、日志。
+- 切流前 SQLite v2 保护点为 `/data/dumate-studio/backups/v1429-pre-switch-20260813T035333Z`，manifest SHA-256 `129d196f825d5d6e9e232b213b3f73b9684b7377262ad3b75e268fb1b3e24bb6`，数据库 SHA-256 `db40514dd575ae90600e3af347e42d00b95c5b3fd6b4a8bb753bb082a3484749`。manifest verify、逐字节隔离 restore drill 与恢复库 `quick_check=ok` 均通过；旧 v142.8 仍在线作为不回灌数据库的代码回滚点。
+- 目标 Linux 锁定主服务为 `832 collected / 831 passed / 1 approved skip`，sidecar `160/160`，Node `129/129`，release verifier 与下方候选哈希逐字一致。新主服务和 sidecar 均 active/RW、`NRestarts=0`；公网重复 readiness 为 `ready=true / writeReady=true`，sidecar 为 `ready=true / readOnly=false / writePolicy=normal`，SQLite `quick_check=ok`。
+- 真实复杂画布一次原子登记 `10` 张、共用 `2` 张参考图，最终 `10/10 succeeded`、每张 `usedRefs=2 / skippedRefs=0`、持久 Blob URL 和内容哈希齐全。同一 reviewed 请求重复提交精确返回原 10 个 job ID 和成功结果，未启动第二轮 provider。真实小红书批量核心链路的 `3:4` 图片生成返回 200，使用 `2/2` 参考图并得到 `1,573,655` 字节有效图片；看图写文案返回可解析 JSON，标题 `12` 字、正文加标签 `423` 字。验收账号为管理员，平台积分记账按既有规则 bypass，但图片和语言上游均为真实请求，不把 fake-provider 测试写成付费事实。
+- 切流后公网 root/health/OpenAPI/community 连续 `20` 轮共 `80/80` 为 200，Chromium DOM 加载精确 v142.9 cache identity。新版本启动以来生产真实 `/api/image/generate` 聚合为 `17/17` HTTP 200，另有 `1/1` vision-copy 200；没有观察到生成 4xx/5xx。匿名浏览器的两条 `/api/members/me` 401 为预期登录边界。
+- SQLite 保持 `48` 表且切流前后 `quick_check=ok`，总行数由新保护点的 `73,097` 增至 `73,511`，逐表对账无任何减少。媒体均无减少：uploads `7,356→7,387`、composed `1,005→1,005`、canvas blobs `713→725`，视频 projects/uploads/outputs 保持 `64/205/1,968`；新增文件来自受控真实验收和同期正常业务，没有覆盖生产原数据。
 
 ### 本版范围
 
@@ -9,11 +19,11 @@
 - 服务器在前一张运行期间持续刷新尚未开始的同批 queued job 时间，防止真实 `10` 张长批次被 `20` 分钟中断恢复阈值误判为服务重启。任何已成功 job 仍不重放，结果未知仍不自动重提 provider。
 - release/cache identity 更新为 `20260813-v1429-canvas-durable-batch-1`。本版不新增 schema、数据迁移、依赖、持久目录、权限或 Nginx 变更；生产只能同步验签代码/静态，不覆盖 SQLite、账号、媒体、任务、认证或私密配置。
 
-### 候选验证边界
+### 验证证据
 
 - 本地无私密锁定主服务为 `832 collected / 831 passed / 1 approved skip`，视频 sidecar `160/160`，Node `129/129`，画布定向与整批 API 回归 `14/14`；无限画布 typecheck/lint/build/vendor check 全部通过。
 - release verifier 为 Phase 0 `eff3c8a526e28ac2d83366eb22ddfc795b5f905841198664b6ff5ea62171dc0c`，ESM `61 modules / 349 edges`、closure `e00a2266b553cbae2b7a313f9ee2bf0039fb5274a98349cb880d882a490a1eab`，canvas `63 files / 1,772,596 bytes / 6ebf1da77060e6e9752cbb87bed9657afaf2dc0f4e1563a039b8e05bfd3edb72`，runtime `65 files / 3,336,020 bytes / c5b92f62cc9fbd022f624c4d64e2f8b79098088840c4929d834e9b7f2fc3e7ee`。
-- 生产目标 Linux 复验、无流量 sibling 验收、真实付费复杂画布/批量图文与最终切流尚是独立部署门禁，未完成前不写成生产已闭环。
+- 生产目标 Linux、无流量 sibling、真实上游复杂画布/批量图文、公开 API 和浏览器 cache identity 已完成闭环；历史用量与精确媒体例外继续作为 warning-only 可观察事实，不中断或降级普通生产。
 
 ## v142.8 - 2026-08-12（生产：无限画布数量、状态、发布沟通与 AI 选题稳定性）
 
