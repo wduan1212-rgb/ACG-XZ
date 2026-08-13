@@ -293,6 +293,10 @@ def test_generation_source_contract_persists_progressive_results():
     assert "idempotencyKey: id" in source
     assert "sourceProjectId: projectId" in source
     assert "backgroundJob: true" in source
+    assert "const canvasJobsOwnedByActiveAction = new Set<string>()" in source
+    assert "!canvasJobsOwnedByActiveAction.has(item.jobId)" in source
+    assert "ids.forEach((id) => canvasJobsOwnedByActiveAction.add(id))" in source
+    assert "ids.forEach((id) => canvasJobsOwnedByActiveAction.delete(id))" in source
     assert "waitCanvasGenerationJob" in source
     assert "submitCanvasGenerationBatch" in source
     assert "Register the whole explicit batch in one server transaction" in source

@@ -182,7 +182,6 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # large multi-reference payloads to the current upstream at once.  A caller
 # may still override this operational ceiling explicitly.
 IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)
-IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 240)
 IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
 IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS = _positive_env_int(
     "IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS", 270
@@ -202,22 +201,16 @@ def _loop_submit_queue(queues, limit: int):
 
 
 @asynccontextmanager
-async def _bounded_submit_slot(queue, wait_seconds: int, *, kind: str):
+async def _bounded_submit_slot(queue):
     acquired = False
     try:
-        try:
-            await asyncio.wait_for(queue.acquire(), timeout=max(1, int(wait_seconds)))
-            acquired = True
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                503,
-                detail={
-                    "code": f"{kind}_queue_busy",
-                    "message": "生成队列繁忙，本次未调用上游；任务可安全重试",
-                    "retryable": True,
-                    "providerCalled": False,
-                },
-            ) from exc
+        # The provider has a real concurrency ceiling, but that is a worker
+        # capacity concern rather than a reason to reject a creator's task.
+        # Keep the HTTP request in the shared FIFO waiter set until one of the
+        # provider lanes is free.  Batch and Canvas callers already use stable
+        # operation keys, so waiting never creates a duplicate provider call.
+        await queue.acquire()
+        acquired = True
         yield
     finally:
         if acquired:
@@ -226,11 +219,7 @@ async def _bounded_submit_slot(queue, wait_seconds: int, *, kind: str):
 
 def _image_submit_queue():
     queue = _loop_submit_queue(_IMAGE_SUBMIT_QUEUES, IMAGE_SUBMIT_CONCURRENCY)
-    return _bounded_submit_slot(
-        queue,
-        IMAGE_SUBMIT_QUEUE_WAIT_SECONDS,
-        kind="image",
-    )
+    return _bounded_submit_slot(queue)
 
 
 def _video_submit_queue():
@@ -9875,6 +9864,7 @@ def custom_canvas_config(me=Depends(require_member)):
     return {
         "ok": True,
         "available": available,
+        "releaseId": runtime_config.release_id(),
         "basePath": "/XZ-Design/",
         "persistence": "server-owner-scoped-with-browser-cache",
         "ownerScope": "authenticated-member",

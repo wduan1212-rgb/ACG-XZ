@@ -1,5 +1,17 @@
 # 星阵版本记录
 
+## v143.1 - 2026-08-13（本地候选：画布版本边界与批量图文不拒绝排队）
+
+### 本版范围
+
+- 生产只读核对证实：王璇的一次十图画布任务已完整保存十个占位，但旧页面只提交了第一个后台 job，其余 job 在 SQLite 中从未存在；不是图片模型仍在运行。当前源码已有整批登记，本版再消除“占位已落库、整批 job 尚未登记”的前端恢复竞态，并由服务端下发 release identity：长时间打开的画布会发现新版本并重载到当前静态入口。
+- 王端当次两个图文账号均明确要求 `3` 张，服务器实际状态为一条 `3/3` 完成，另一条停在 `1 done / 1 loading / 1 idle`。未推进的第二张没有 provider receipt，与同时的 `240s` 排队后 HTTP 503 一致。本版撤掉“等待超时就拒绝创作”：服务端仍按上游真实容量运行两个 worker，后来任务在统一队列内等待，不再在调用上游前返回 503。浏览器的两个账号 production 独立推进，新建和刷新恢复不再被第一个账号串行堵住。
+- release/cache identity 更新为 `20260813-v1431-creation-queue-stability-1`。本版不新增 schema、迁移、依赖或持久目录；部署仍只允许验签代码/静态进入新 sibling release，不覆盖 SQLite、账号、媒体、认证或 provider 私密配置。
+
+### 本地验证
+
+- 画布/批量/排队定向回归 `81/81`、主服务全量 `839 passed + 1 skipped`、工作区 Node `129/129` 通过；无限画布 `typecheck` / `lint` / `build:embed` / vendor check 通过。release verifier 为 Phase 0 `1ec88d63191fe99c8a1b247d340a7462c2e14c8562a5a040fe4ecf3ec00c290f`，ESM closure `5df12b717799c17445cae3145c7b71162432ea32f1ef9eb777a5f437663ffc1c`，canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,335,797 bytes / 1a22eb0b69cf1718398f7baed4f552ff21b104c2b2a0beac8ec09e8640e2b121`。此处仅记本地 fake-provider/源码契约，不冒充真实生图或生产部署结论。
+
 ## v143.0 - 2026-08-13（生产：图文批次原子起跑与共享生图公平排队）
 
 ### 生产部署闭环

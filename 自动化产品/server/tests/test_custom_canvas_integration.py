@@ -787,9 +787,10 @@ console.log(JSON.stringify({{
         )
         self.assertIn("if (!iframe) return mountCanvasFrame()", integration)
         self.assertIn('{ type: "custom-canvas:create-project" }', integration)
-        self.assertRegex(
+        self.assertIn("iframe.src = canvasEntryUrl(currentProjectId)", integration)
+        self.assertIn(
+            'return `/XZ-Design/?embed=1&v=${release}${projectHash(projectId)}`',
             integration,
-            r"iframe\.src = `/XZ-Design/\?embed=1&v=[^`$]+\$\{projectHash\(currentProjectId\)\}`",
         )
         self.assertIn('return value ? `#/project/${encodeURIComponent(value)}` : "#/"', integration)
         self.assertNotRegex(
@@ -880,6 +881,19 @@ console.log(JSON.stringify({{
             "itemIds": ["item-a"],
         }])
         self.assertIn("published-state", result["features"])
+        self.assertEqual(result["releaseId"], main.runtime_config.release_id())
+
+    def test_canvas_iframe_uses_server_release_identity_and_refreshes_on_change(self):
+        integration = (APP_DIR / "js/views/customCanvasIntegration.js").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn('canvasReleaseId = safeText(config.releaseId, "current", 180)', integration)
+        self.assertIn("const canvasEntryUrl = projectId =>", integration)
+        self.assertIn('fetch("/api/custom-canvas/config"', integration)
+        self.assertIn("nextReleaseId === canvasReleaseId", integration)
+        self.assertIn("iframe.src = canvasEntryUrl(currentProjectId)", integration)
+        self.assertIn("}, 60_000);", integration)
+        self.assertNotIn("v=20260813-v1431-creation-queue-stability-1", integration)
 
     def test_fastapi_mounts_canvas_without_exposing_external_source_tree(self):
         mounts = [getattr(route, "path", "") for route in main.app.routes]

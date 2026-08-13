@@ -245,6 +245,9 @@ export async function mountCustomCanvas(
   let iframeReady = false;
   let canvasAppReady = false;
   let canvasBootstrap = null;
+  let canvasReleaseId = "";
+  let releaseWatchTimer = null;
+  let releaseWatchActive = false;
   let messageListenerInstalled = false;
   let createProjectWhenReady = false;
   let pendingLaunchPayload = launchPayload && typeof launchPayload === "object" ? launchPayload : null;
@@ -268,6 +271,42 @@ export async function mountCustomCanvas(
   const projectHash = projectId => {
     const value = safeText(projectId, "", 180);
     return value ? `#/project/${encodeURIComponent(value)}` : "#/";
+  };
+
+  const canvasEntryUrl = projectId => {
+    const release = encodeURIComponent(canvasReleaseId || "current");
+    return `/XZ-Design/?embed=1&v=${release}${projectHash(projectId)}`;
+  };
+
+  const startReleaseWatch = () => {
+    if (releaseWatchTimer !== null) return;
+    releaseWatchTimer = window.setInterval(async () => {
+      if (disposed || releaseWatchActive || controller.signal.aborted) return;
+      releaseWatchActive = true;
+      try {
+        const response = await fetch("/api/custom-canvas/config", {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (!response.ok) return;
+        const config = await response.json().catch(() => ({}));
+        const nextReleaseId = safeText(config.releaseId, "", 180);
+        if (!nextReleaseId || nextReleaseId === canvasReleaseId || !iframe) return;
+        canvasReleaseId = nextReleaseId;
+        iframeReady = false;
+        canvasAppReady = false;
+        pendingLaunchSent = false;
+        iframe.src = canvasEntryUrl(currentProjectId);
+      } catch (error) {
+        if (error?.name !== "AbortError") {
+          console.warn("[custom-canvas] release identity check failed", error);
+        }
+      } finally {
+        releaseWatchActive = false;
+      }
+    }, 60_000);
   };
 
   const projectIdFromHash = value => {
@@ -375,7 +414,7 @@ export async function mountCustomCanvas(
     // Cache-bust the iframe entry alongside the main application build. The
     // canvas itself continues to own hashed chunk URLs; this only prevents a
     // browser from reusing an old entry document after a safe static rebuild.
-    iframe.src = `/XZ-Design/?embed=1&v=20260813-v1430-batch-durable-start-1${projectHash(currentProjectId)}`;
+    iframe.src = canvasEntryUrl(currentProjectId);
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";
@@ -411,13 +450,13 @@ export async function mountCustomCanvas(
     if (!iframe) return mountCanvasFrame();
     const nextHash = projectHash(nextProjectId);
     if (!iframeReady) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260813-v1430-batch-durable-start-1${nextHash}`;
+      iframe.src = canvasEntryUrl(nextProjectId);
       return true;
     }
     try {
       iframe.contentWindow.location.hash = nextHash.slice(1);
     } catch (_) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260813-v1430-batch-durable-start-1${nextHash}`;
+      iframe.src = canvasEntryUrl(nextProjectId);
     }
     return true;
   };
@@ -440,6 +479,8 @@ export async function mountCustomCanvas(
     if (disposed) return;
     disposed = true;
     controller.abort();
+    if (releaseWatchTimer !== null) window.clearInterval(releaseWatchTimer);
+    releaseWatchTimer = null;
     unsubscribeOutput();
     if (messageListenerInstalled) window.removeEventListener("message", onMessage);
     removeCanvasRouteGuard();
@@ -487,7 +528,7 @@ export async function mountCustomCanvas(
       iframeReady = false;
       canvasAppReady = false;
       pendingLaunchSent = false;
-      iframe.src = `/XZ-Design/?embed=1&v=20260813-v1430-batch-durable-start-1${projectHash(currentProjectId)}`;
+      iframe.src = canvasEntryUrl(currentProjectId);
       return true;
     },
     markPublished({
@@ -630,6 +671,7 @@ export async function mountCustomCanvas(
     if (disposed) return integration;
     const storageNamespace = safeText(config.storageNamespace, "", 80).replace(/[^\w-]/g, "");
     if (!storageNamespace) throw new Error("服务端没有返回当前成员的画布分仓");
+    canvasReleaseId = safeText(config.releaseId, "current", 180);
     if (!currentProjectId) {
       if (pendingLaunchPayload) {
         // 首页发起的创作必须在新画布中执行，不能偷用上一次打开的项目。
@@ -652,6 +694,7 @@ export async function mountCustomCanvas(
         : []
     };
     mountCanvasFrame();
+    startReleaseWatch();
   } catch (error) {
     if (disposed || error?.name === "AbortError") return integration;
     host.innerHTML = messageHtml(

@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260813-v1430-batch-durable-start-1";
+import { AI } from "../api/ai.js?v=20260813-v1431-creation-queue-stability-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1430-batch-durable-start-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1430-batch-durable-start-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1431-creation-queue-stability-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1431-creation-queue-stability-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1430-batch-durable-start-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1431-creation-queue-stability-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1430-batch-durable-start-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1431-creation-queue-stability-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -3812,10 +3812,10 @@ export async function startBatch(plan, session) {
   think(`并发起草 ${accounts.length} 个账号 · ${batch.productionIds.length} 条内容…`, session.id);
   let drafted = 0;
   const total = batch.productionIds.length;
-  // A single image batch occupies only one shared image lane.  Large batches
-  // therefore queue their own cards instead of monopolising both server slots
-  // and timing out another creator's canvas or batch request.
-  const draftConcurrency = batch.contentKind === "image" ? 1 : 2;
+  // Different account productions advance independently. The server owns the
+  // provider-capacity queue, so the browser must not serialize an entire image
+  // batch behind its first account.
+  const draftConcurrency = 2;
   runPool(batchProds(batch), async p => {
     while (batch.paused && state.batches.includes(batch)) await delay(250);
     if (!state.batches.includes(batch)) return;
@@ -4227,13 +4227,13 @@ export function resumeActiveBatches() {
     }
     const stuck = [...new Set([...staticStuck, ...hydration.draft])];
     if (stuck.length) {
-      const recoveryConcurrency = b.contentKind === "image" ? 1 : 2;
+      const recoveryConcurrency = 2;
       runPool(stuck, p => resumeHydratedDraft(p, b), recoveryConcurrency).then(() => evaluate(b.id));
       resumed += stuck.length;
     }
     const imageStuck = hydration.images;
     if (imageStuck.length) {
-      runPool(imageStuck, p => runBatchImagesToReview(p, b), 1).then(() => evaluate(b.id));
+      runPool(imageStuck, p => runBatchImagesToReview(p, b), 2).then(() => evaluate(b.id));
       resumed += imageStuck.length;
     }
     if (!dormantGeneratingIds.has(b.id)) evaluate(b.id);

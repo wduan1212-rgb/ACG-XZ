@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from pathlib import Path
 
@@ -36,17 +37,42 @@ class ProviderStartupRaceTests(unittest.TestCase):
             orchestrator,
         )
 
-    def test_shared_image_queue_waits_for_a_normal_busy_provider_window(self):
+    def test_shared_image_queue_never_rejects_a_creator_for_waiting(self):
         main_source = (ROOT / "server" / "main.py").read_text("utf-8")
-        self.assertIn(
-            'IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 240)',
-            main_source,
-        )
         self.assertIn(
             'IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)',
             main_source,
         )
-        self.assertIn('"providerCalled": False', main_source)
+        queue_section = main_source.split("async def _bounded_submit_slot", 1)[1]
+        queue_section = queue_section.split("def _image_submit_queue", 1)[0]
+        self.assertIn("await queue.acquire()", queue_section)
+        self.assertNotIn("asyncio.wait_for", queue_section)
+        self.assertNotIn("image_queue_busy", main_source)
+
+    def test_shared_image_queue_drains_all_waiters_at_provider_capacity(self):
+        from server import main
+
+        async def scenario():
+            queue = asyncio.Semaphore(2)
+            active = 0
+            peak = 0
+            completed = []
+
+            async def worker(index):
+                nonlocal active, peak
+                async with main._bounded_submit_slot(queue):
+                    active += 1
+                    peak = max(peak, active)
+                    await asyncio.sleep(0.01)
+                    completed.append(index)
+                    active -= 1
+
+            await asyncio.gather(*(worker(index) for index in range(8)))
+            return peak, completed
+
+        peak, completed = asyncio.run(scenario())
+        self.assertEqual(peak, 2)
+        self.assertEqual(sorted(completed), list(range(8)))
 
 
 if __name__ == "__main__":

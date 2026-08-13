@@ -533,7 +533,9 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('act.removeAttribute("aria-busy")', view)
         self.assertIn('await persistRecoveredDocuments("batches", batch)', orchestrator)
         self.assertIn('await persistRecoveredDocuments("sessions", session)', orchestrator)
-        self.assertIn('const draftConcurrency = batch.contentKind === "image" ? 1 : 2', orchestrator)
+        self.assertIn("const draftConcurrency = 2", orchestrator)
+        self.assertIn("const recoveryConcurrency = 2", orchestrator)
+        self.assertIn("runPool(imageStuck, p => runBatchImagesToReview(p, b), 2)", orchestrator)
 
     def test_digital_human_queue_and_remote_batch_hydration_match_v120_capacity(self):
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")

@@ -3,8 +3,8 @@
 import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
-import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js?v=20260813-v1430-batch-durable-start-1";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260813-v1430-batch-durable-start-1";
+import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js?v=20260813-v1431-creation-queue-stability-1";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260813-v1431-creation-queue-stability-1";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);

@@ -281,7 +281,7 @@ class ReleaseContractVerifierTest(unittest.TestCase):
         self.assertGreaterEqual(result["esm"]["reachableModules"], 50)
         self.assertEqual(63, result["canvas"]["fileCount"])
         self.assertEqual(
-            "20260813-v1430-batch-durable-start-1",
+            "20260813-v1431-creation-queue-stability-1",
             result["runtime"]["releaseId"],
         )
         self.assertGreaterEqual(result["runtime"]["fileCount"], 45)

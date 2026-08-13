@@ -1,21 +1,21 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260813-v1430-batch-durable-start-1";
+import { AI } from "../api/ai.js?v=20260813-v1431-creation-queue-stability-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260813-v1430-batch-durable-start-1";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260813-v1431-creation-queue-stability-1";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260813-v1430-batch-durable-start-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260813-v1431-creation-queue-stability-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260813-v1430-batch-durable-start-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260813-v1431-creation-queue-stability-1";
 import { isAccountDisabled } from "../domain/accounts.js";
 import {
   accountPublishAvailable,
   accountPublishQuota,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "../domain/productionQuota.js?v=20260813-v1430-batch-durable-start-1";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260813-v1430-batch-durable-start-1";
+} from "../domain/productionQuota.js?v=20260813-v1431-creation-queue-stability-1";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260813-v1431-creation-queue-stability-1";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";

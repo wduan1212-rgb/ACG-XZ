@@ -55,6 +55,12 @@ import type {
 // (~15–20s) and already looks good. Bump if you want more detail per poster.
 const POSTER_QUALITY: Quality = "low";
 
+// Placeholders are persisted before their paid jobs are registered so a page
+// close cannot lose the user's intent. Keep the recovery observer out of that
+// short two-phase window: the active action owns polling until registration is
+// durable, then normal background recovery can take over.
+const canvasJobsOwnedByActiveAction = new Set<string>();
+
 function labelForItem(itemId: string, items: CanvasItem[]): string {
   const it = items.find((i) => i.id === itemId);
   if (it && isImageItem(it)) return it.label ?? "参考图";
@@ -233,6 +239,7 @@ export function useStudioActions(projectId: string) {
           && item.loading
           && item.provenance?.backgroundJob === true
           && item.jobId
+          && !canvasJobsOwnedByActiveAction.has(item.jobId)
           && Date.now() >= (recoveryRetry.get(item.jobId)?.nextAt ?? 0)
         ) void recoverOne(item);
       }
@@ -428,6 +435,7 @@ export function useStudioActions(projectId: string) {
           id: makeEditPlaceholder(source, index),
           task: startTask("generate", `编辑图 ${index + 1}`),
         }));
+        jobs.forEach((job) => canvasJobsOwnedByActiveAction.add(job.id));
         setSelection(jobs.map((job) => job.id));
         updateMessage(projectId, agentMsgId, {
           text: isParallel
@@ -438,10 +446,16 @@ export function useStudioActions(projectId: string) {
         });
         // Persist the recoverable edit jobs before the first paid request.
         // Closing the canvas after this point only stops local polling.
-        await flushCanvasProjectServer(projectId);
+        try {
+          await flushCanvasProjectServer(projectId);
+        } catch (error) {
+          jobs.forEach((job) => canvasJobsOwnedByActiveAction.delete(job.id));
+          throw error;
+        }
 
         const results = await runConcurrentQueue(
           jobs.map((job) => async () => {
+            try {
               const sourceImage =
                 referenceImageById.get(job.source.id) ??
                 (await downscaleDataUrl(bestAssetUrlFor(job.source), 1280, 0.85)).dataUrl;
@@ -488,6 +502,9 @@ export function useStudioActions(projectId: string) {
                 label: `图 ${job.index + 1} · 已完成`,
               });
               return job.id;
+            } finally {
+              canvasJobsOwnedByActiveAction.delete(job.id);
+            }
           }),
           {
             limit: CANVAS_IMAGE_CONCURRENCY,
@@ -500,6 +517,7 @@ export function useStudioActions(projectId: string) {
             },
           },
         );
+        jobs.forEach((job) => canvasJobsOwnedByActiveAction.delete(job.id));
 
         const completed = results.flatMap((result) =>
           result.status === "fulfilled" ? [result.value] : [],
@@ -675,6 +693,7 @@ export function useStudioActions(projectId: string) {
           { length: count },
           (_, index) => variants[index] || singlePrompt,
         );
+        ids.forEach((id) => canvasJobsOwnedByActiveAction.add(id));
         ids.forEach((id, index) => {
           updateItem(projectId, id, {
             provenance: {
@@ -714,6 +733,7 @@ export function useStudioActions(projectId: string) {
             },
           })),
         });
+        ids.forEach((id) => canvasJobsOwnedByActiveAction.delete(id));
         let settledCount = 0;
         const results = await runConcurrentQueue(
           ids.map((id, index) => async () => {
@@ -866,6 +886,7 @@ export function useStudioActions(projectId: string) {
           if (failures.length) recordFailure(projectId);
         }
       } catch (e) {
+        ids.forEach((id) => canvasJobsOwnedByActiveAction.delete(id));
         const cancelled = isCanvasRequestCancelled(e);
         const continuingInBackground = batchRegistrationStarted
           && (cancelled || isCanvasConnectivityError(e));
