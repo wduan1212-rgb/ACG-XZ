@@ -334,8 +334,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260813-v1431-creation-queue-stability-1", html)
-        self.assertIn("app.js?v=20260813-v1431-creation-queue-stability-1", html)
+        self.assertIn("styles.css?v=20260813-v1432-publish-export-1", html)
+        self.assertIn("app.js?v=20260813-v1432-publish-export-1", html)
         self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
         self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
         self.assertNotIn(">动态视频</button>", html)
@@ -650,7 +650,7 @@ host.replaceChildren = child => {{
   if (child !== frame) throw new Error("wrong iframe mounted");
 }};
 mountCustomVideo(host, {{ projectId: "history-project-1" }});
-if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&release=20260813-v1431-creation-queue-stability-1&project=history-project-1") {{
+if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&release=20260813-v1432-publish-export-1&project=history-project-1") {{
   throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
 }}
 """

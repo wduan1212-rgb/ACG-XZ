@@ -1,21 +1,22 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260813-v1431-creation-queue-stability-1";
+import { AI } from "../api/ai.js?v=20260813-v1432-publish-export-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260813-v1431-creation-queue-stability-1";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260813-v1432-publish-export-1";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260813-v1431-creation-queue-stability-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260813-v1432-publish-export-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260813-v1431-creation-queue-stability-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260813-v1432-publish-export-1";
 import { isAccountDisabled } from "../domain/accounts.js";
 import {
   accountPublishAvailable,
   accountPublishQuota,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "../domain/productionQuota.js?v=20260813-v1431-creation-queue-stability-1";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260813-v1431-creation-queue-stability-1";
+} from "../domain/productionQuota.js?v=20260813-v1432-publish-export-1";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260813-v1432-publish-export-1";
+import { resolvePublishPlanDate, shanghaiDayKey } from "../domain/publishSchedule.js?v=20260813-v1432-publish-export-1";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
@@ -80,14 +81,7 @@ function clearPublishDraft(output, kind) {
   } catch (_) {}
 }
 
-function todayValue() {
-  const date = new Date();
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0")
-  ].join("-");
-}
+const todayValue = () => shanghaiDayKey();
 
 function outputKind(output = {}) {
   return output.kind === "canvas" || output.type === "图集" ? "canvas" : "video";
@@ -122,13 +116,12 @@ function eligibleAccounts(kind) {
   return state.accounts.filter(account => !isAccountDisabled(account) && account.mode === expectedMode);
 }
 
-function accountOptions(accounts, selectedId = "") {
+function accountOptions(accounts, selectedId = "", dayKey = todayValue()) {
   return accounts.map(account => {
-    const quota = accountPublishQuota(account.id);
-    const blocked = quota.remaining <= 0;
+    const quota = accountPublishQuota(account.id, dayKey);
     return `
-      <option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""} ${blocked ? "disabled" : ""}>
-        【今日 ${quota.used}/${quota.limit}】${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
+      <option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""}>
+        【${esc(dayKey)} ${quota.used}/${quota.limit}】${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
       </option>
     `;
   }).join("");
@@ -476,6 +469,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
   }
   const kind = outputKind(output);
   const draft = readPublishDraft(output, kind);
+  const initialPlanDate = resolvePublishPlanDate(draft.planDate);
   const accounts = eligibleAccounts(kind);
   if (!accounts.length) {
     toast(`请先创建至少一个${kind === "video" ? "视频号" : "图文"}账号`, "error");
@@ -545,7 +539,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
     <div class="mp-body custom-publish-body">
       <div class="custom-publish-grid">
         <label class="field"><span>发布账号（必填）</span>
-          <select class="input" id="customPublishAccount">${accountOptions(accounts, selectedAccountId)}</select>
+          <select class="input" id="customPublishAccount">${accountOptions(accounts, selectedAccountId, initialPlanDate)}</select>
         </label>
         <label class="field"><span>产品（必填）</span>
           <select class="input" id="customPublishProduct">${productOptions(products, selectedProductId)}</select>
@@ -553,7 +547,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
       </div>
       <div class="custom-publish-grid">
         <label class="field"><span>计划发布日期（必填）</span>
-          <input class="input" type="date" id="customPublishDate" value="${esc(draft.planDate || todayValue())}" required />
+          <input class="input" type="date" id="customPublishDate" min="${esc(todayValue())}" value="${esc(initialPlanDate)}" required />
         </label>
         <label class="field"><span>发布清单产品标签（随产品自动填写）</span>
           <input class="input" id="customPublishProductTag" maxlength="20" value="${esc(initialProductTag)}" readonly />
@@ -692,7 +686,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
       const saveDraftNow = () => writePublishDraft(output, kind, {
         accountId: accountInput?.value || selectedAccountId,
         productId: productInput?.value || selectedProductId,
-        planDate: dateInput?.value || todayValue(),
+        planDate: resolvePublishPlanDate(dateInput?.value),
         title: titleInput?.value || "",
         copy: copyInput?.value || "",
         note: noteInput?.value || "",
@@ -711,6 +705,17 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
       const queueDraftSave = () => {
         window.clearTimeout(draftTimer);
         draftTimer = window.setTimeout(saveDraftNow, 120);
+      };
+      const refreshPublishAccountOptions = async ({ force = false } = {}) => {
+        if (!accountInput || !dateInput) return;
+        const dayKey = resolvePublishPlanDate(dateInput.value);
+        dateInput.value = dayKey;
+        await refreshAccountPublishQuotas(accounts.map(account => account.id), { force, dayKey });
+        if (resolvePublishPlanDate(dateInput.value) !== dayKey) return;
+        const selectedId = accountInput.value || selectedAccountId;
+        accountInput.innerHTML = accountOptions(accounts, selectedId, dayKey);
+        accountInput.value = selectedId;
+        updateTextRule();
       };
       persistDraft = () => {
         window.clearTimeout(draftTimer);
@@ -947,7 +952,11 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
         updateTextRule();
         queueDraftSave();
       });
-      dateInput?.addEventListener("change", queueDraftSave);
+      dateInput?.addEventListener("change", () => {
+        dateInput.value = resolvePublishPlanDate(dateInput.value);
+        queueDraftSave();
+        void refreshPublishAccountOptions({ force: true });
+      });
       noteInput?.addEventListener("input", queueDraftSave);
       coverStyleInput?.addEventListener("change", () => {
         if (coverSource === "generated") invalidateCover("封面风格已变化，请按新风格重新生成封面。");
@@ -970,6 +979,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
       updateCoverHint();
       updateTextRule();
       saveDraftNow();
+      void refreshPublishAccountOptions();
 
       coverPreview?.addEventListener("click", () => {
         if (coverBusy) return;
@@ -1170,10 +1180,10 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
           const productId = productInput.value;
           const product = productById(productId);
           const title = titleInput.value.trim();
-          const planDate = panel.querySelector("#customPublishDate").value;
+          const planDate = resolvePublishPlanDate(panel.querySelector("#customPublishDate").value);
+          panel.querySelector("#customPublishDate").value = planDate;
           if (!canDeliver()) throw new Error("当前账号没有发布权限");
           if (!account) throw new Error("请先选择发布账号");
-          if (!planDate) throw new Error("请填写计划发布日期");
           await refreshAccountPublishQuotas([accountId], { force: true, dayKey: planDate });
           if (!accountPublishAvailable(accountId, 1, planDate)) throw new Error(`该账号 ${planDate} 已达到 2 条内容的发布上限`);
           if (!product) throw new Error("请先选择产品");

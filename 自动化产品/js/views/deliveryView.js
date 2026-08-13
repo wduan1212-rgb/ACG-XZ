@@ -1,18 +1,19 @@
 /* 发布清单：创作端全景（含明细 + 发布回链）+ 供应商视角（下载 / 回传发布链接）
    供应商回传小红书/视频号链接 → 素材标记「已发布」，链路闭环 */
 
-import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
+import { $, $$, esc, gradFor, timeAgo, downloadBlob } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember, refreshDeliveryMetrics } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState, deliveryScopedMediaUrl } from "../domain/delivery.js?v=20260813-v1431-creation-queue-stability-1";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState, deliveryScopedMediaUrl } from "../domain/delivery.js?v=20260813-v1432-publish-export-1";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260813-v1431-creation-queue-stability-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260813-v1431-creation-queue-stability-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260813-v1432-publish-export-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260813-v1432-publish-export-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
+import { buildDeliveryReturnWorkbook, collectDeliveryReturnRows, deliveryReturnWorkbookName, supplierReturnDayKey } from "../domain/deliveryExport.js?v=20260813-v1432-publish-export-1";
 
 function extractUrl(text) {
   const matches = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/g) || [];
@@ -111,6 +112,94 @@ function matchesDateRange(day, start, end) {
 
 function sortDelivered(all) {
   return [...all].sort((a, b) => deliveryTime(b.asset) - deliveryTime(a.asset));
+}
+
+function openDeliveryReturnExport(all = []) {
+  const returnedDays = all
+    .filter(item => String(item?.asset?.publishedUrl || "").trim())
+    .map(item => supplierReturnDayKey(item.asset))
+    .filter(Boolean)
+    .sort();
+  if (!returnedDays.length) {
+    toast("当前发布清单还没有供应商回传链接，暂无可导出的记录", "error");
+    return null;
+  }
+  const savedStart = String(supFilters.returnedFrom || "");
+  const savedEnd = String(supFilters.returnedTo || "");
+  const useSavedRange = savedStart && savedEnd && savedStart <= savedEnd;
+  const initialStart = useSavedRange ? savedStart : returnedDays[0];
+  const initialEnd = useSavedRange ? savedEnd : returnedDays[returnedDays.length - 1];
+  const scopedRows = () => all.map(item => ({
+    ...item,
+    publisher: publisherLabel(item.asset),
+  }));
+  return openModal(`
+    <div class="mp-head delivery-export-head">
+      <div><b>导出发布回传 Excel</b><em>按供应商最后回传链接的时间筛选，日期首尾均包含。</em></div>
+      <button class="icon-btn" type="button" data-close aria-label="关闭">${icon("x", 15)}</button>
+    </div>
+    <div class="mp-body delivery-export-body">
+      <div class="delivery-export-range">
+        <label class="field"><span>开始日期</span><input class="input" type="date" id="deliveryExportStart" value="${esc(initialStart)}" required /></label>
+        <i>至</i>
+        <label class="field"><span>结束日期</span><input class="input" type="date" id="deliveryExportEnd" value="${esc(initialEnd)}" required /></label>
+      </div>
+      <p class="delivery-export-summary" id="deliveryExportSummary" aria-live="polite"></p>
+      <div class="delivery-export-columns"><b>表格字段</b><span>标题</span><span>账号</span><span>回传链接</span><span>观看量</span><span>回传时间</span><span>发布人</span><span>平台</span></div>
+    </div>
+    <div class="mp-foot">
+      <button class="btn ghost" type="button" data-close>取消</button>
+      <button class="btn primary" type="button" id="deliveryExportSubmit">${icon("download", 14)} 导出 Excel</button>
+    </div>
+  `, {
+    onMount(panel, close) {
+      const startInput = panel.querySelector("#deliveryExportStart");
+      const endInput = panel.querySelector("#deliveryExportEnd");
+      const summary = panel.querySelector("#deliveryExportSummary");
+      const submit = panel.querySelector("#deliveryExportSubmit");
+      const selectedRows = () => collectDeliveryReturnRows(scopedRows(), {
+        start: startInput.value,
+        end: endInput.value,
+      });
+      const updateSummary = () => {
+        try {
+          const rows = selectedRows();
+          summary.classList.remove("is-error");
+          summary.textContent = rows.length
+            ? `该区间将导出 ${rows.length} 条已回传内容；链接在 Excel 中可直接点击。`
+            : "该区间没有已回传发布链接的内容。";
+          submit.disabled = rows.length === 0;
+        } catch (error) {
+          summary.classList.add("is-error");
+          summary.textContent = error?.message || "日期范围不正确";
+          submit.disabled = true;
+        }
+      };
+      startInput.addEventListener("change", updateSummary);
+      endInput.addEventListener("change", updateSummary);
+      updateSummary();
+      submit.addEventListener("click", async () => {
+        submit.disabled = true;
+        submit.innerHTML = `${icon("refresh", 14)} 正在整理数据`;
+        try {
+          await refreshDeliveryMetrics({ force: true });
+          const rows = selectedRows();
+          if (!rows.length) throw new Error("该日期区间没有可导出的回传内容");
+          const blob = buildDeliveryReturnWorkbook(rows, {
+            start: startInput.value,
+            end: endInput.value,
+          });
+          downloadBlob(deliveryReturnWorkbookName(startInput.value, endInput.value), blob);
+          toast(`已导出 ${rows.length} 条发布回传记录`);
+          close();
+        } catch (error) {
+          toast(error?.message || "Excel 导出失败，请重试", "error");
+          submit.disabled = false;
+          submit.innerHTML = `${icon("download", 14)} 导出 Excel`;
+        }
+      });
+    },
+  });
 }
 
 function remarkReadAt(asset) {
@@ -721,10 +810,14 @@ export const deliveryView = {
       const all = sortDelivered(deliveredAssets());
       root.innerHTML = `
         <div class="delivery-page">
+          <div class="delivery-page-actions">
+            <button class="btn ghost delivery-excel-export" type="button" data-delivery-excel-export>${icon("download", 14)} 导出发布回传 Excel</button>
+          </div>
           <div id="dvBody"></div>
         </div>`;
 
       const body = $("#dvBody", root);
+      root.querySelector("[data-delivery-excel-export]")?.addEventListener("click", () => openDeliveryReturnExport(all));
       if (isSupplierRole) drawSupplier(body, all);
       else drawCreator(body, all);
     };

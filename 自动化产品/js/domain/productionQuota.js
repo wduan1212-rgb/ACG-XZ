@@ -1,5 +1,6 @@
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
+import { shanghaiDayKey } from "./publishSchedule.js?v=20260813-v1432-publish-export-1";
 
 export const ACCOUNT_DAILY_PUBLISH_LIMIT = 2;
 
@@ -9,17 +10,9 @@ const CACHE_TTL_MS = 10_000;
 const AUTO_REFRESH_MS = 15_000;
 let autoRefreshInstalled = false;
 
-function chinaDayKey(timestamp = Date.now()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
-  }).formatToParts(new Date(Number(timestamp) || Date.now()));
-  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  return `${value.year}-${value.month}-${value.day}`;
-}
-
 function quotaDayKey(value = "") {
   const dayKey = String(value || "").trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey : chinaDayKey();
+  return /^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey : shanghaiDayKey();
 }
 
 function cacheKey(accountId, dayKey) {
@@ -34,10 +27,10 @@ function deliveryPublishDayKey(delivery = {}) {
   const publishedAt = Number(
     delivery.quotaPublishedAt || delivery.deliveredAt || delivery.createdAt || 0
   );
-  return publishedAt > 0 ? chinaDayKey(publishedAt) : "";
+  return publishedAt > 0 ? shanghaiDayKey(publishedAt) : "";
 }
 
-function localUsed(accountId, dayKey = chinaDayKey()) {
+function localUsed(accountId, dayKey = shanghaiDayKey()) {
   const selectedDay = quotaDayKey(dayKey);
   return state.assets.filter(asset => (
     String(asset?.accountId || "") === String(accountId || "")
@@ -46,7 +39,7 @@ function localUsed(accountId, dayKey = chinaDayKey()) {
   )).length;
 }
 
-export function accountPublishQuota(accountId, dayKey = chinaDayKey()) {
+export function accountPublishQuota(accountId, dayKey = shanghaiDayKey()) {
   const id = String(accountId || "");
   const selectedDay = quotaDayKey(dayKey);
   const local = localUsed(id, selectedDay);
@@ -64,11 +57,11 @@ export function accountPublishQuota(accountId, dayKey = chinaDayKey()) {
   };
 }
 
-export function accountPublishAvailable(accountId, requested = 1, dayKey = chinaDayKey()) {
+export function accountPublishAvailable(accountId, requested = 1, dayKey = shanghaiDayKey()) {
   return accountPublishQuota(accountId, dayKey).remaining >= Math.max(1, Number(requested) || 1);
 }
 
-export function publishQuotaExceededMessage(accountIds = [], dayKey = chinaDayKey()) {
+export function publishQuotaExceededMessage(accountIds = [], dayKey = shanghaiDayKey()) {
   const names = [...new Set((accountIds || []).map(id => (
     state.accounts.find(account => String(account.id) === String(id))?.name || String(id)
   )))].slice(0, 3);
@@ -92,7 +85,7 @@ function announceQuotaChange(accountIds, dayKey) {
   }
 }
 
-export async function refreshAccountPublishQuotas(accountIds = [], { force = false, dayKey = chinaDayKey() } = {}) {
+export async function refreshAccountPublishQuotas(accountIds = [], { force = false, dayKey = shanghaiDayKey() } = {}) {
   const ids = [...new Set((accountIds || []).map(String).filter(Boolean))];
   if (!ids.length || !remote.isOn() || !remote.hasToken()) return false;
   const selectedDay = quotaDayKey(dayKey);

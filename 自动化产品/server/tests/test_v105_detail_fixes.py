@@ -108,13 +108,13 @@ class V105DetailFixesTest(unittest.TestCase):
         self.assertIn('@app.post("/api/projects/{project_id}/speed-version")', backend)
         self.assertIn("DEFAULT_DELIVERY_SPEED = 1.2", pipeline)
 
-    def test_custom_publish_accounts_are_scoped_and_marked(self):
+    def test_custom_publish_accounts_are_scoped_and_use_selected_day_quota(self):
         publishing = self.read("js/views/customPublish.js")
         accounts = self.read("js/domain/accounts.js")
         cards = self.read("js/agent/cards.js")
         studio = self.read("js/views/studio.js")
         self.assertIn('account.mode === expectedMode', publishing)
-        self.assertIn("accountPublishQuota(account.id)", publishing)
+        self.assertIn("accountPublishQuota(account.id, dayKey)", publishing)
         self.assertIn("export function accountCreatedToday", accounts)
         self.assertIn("accountPublishQuota(a.id)", cards)
         self.assertIn("accountPublishQuota(acc.id)", studio)

@@ -160,7 +160,7 @@ export function crc32(u8) {
   for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
-export function buildZipBlob(entries) { // entries: [{name, u8}]
+export function buildZipBlob(entries, type = "application/zip") { // entries: [{name, u8}]
   const enc = new TextEncoder();
   const parts = [], central = [];
   let offset = 0;
@@ -185,7 +185,7 @@ export function buildZipBlob(entries) { // entries: [{name, u8}]
   end.setUint32(0, 0x06054b50, true);
   end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
   end.setUint32(12, centralSize, true); end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type });
 }
 export async function blobToU8(blob) {
   return new Uint8Array(await blob.arrayBuffer());

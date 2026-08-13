@@ -15467,10 +15467,14 @@ def _valid_publish_day_key(value):
 
 
 def _requested_publish_day_key(item, timestamp_ms=None):
-    """Use the selected publish date; submission time remains audit-only."""
+    """Use a current/future selected day; stale client drafts fall back to today."""
     raw = str((item or {}).get("planDate") or "").strip() if isinstance(item, dict) else ""
     if raw:
-        return _valid_publish_day_key(raw)
+        selected = _valid_publish_day_key(raw)
+        if not selected:
+            return ""
+        today = _account_publish_day_key(timestamp_ms)
+        return selected if selected >= today else today
     return _account_publish_day_key(timestamp_ms)
 
 

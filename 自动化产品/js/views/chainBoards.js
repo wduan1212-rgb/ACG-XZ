@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260813-v1431-creation-queue-stability-1";
-import { setStage, shotsToText } from "../domain/productions.js?v=20260813-v1431-creation-queue-stability-1";
+import { AI } from "../api/ai.js?v=20260813-v1432-publish-export-1";
+import { setStage, shotsToText } from "../domain/productions.js?v=20260813-v1432-publish-export-1";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260813-v1431-creation-queue-stability-1";
-import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260813-v1431-creation-queue-stability-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260813-v1432-publish-export-1";
+import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260813-v1432-publish-export-1";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260813-v1431-creation-queue-stability-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260813-v1432-publish-export-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;

@@ -6,6 +6,6 @@
     "verify:esm-contract": "python3 tools/verify_release_contracts.py esm",
     "verify:canvas-contract": "python3 tools/verify_release_contracts.py canvas",
     "verify:runtime-contract": "python3 tools/verify_release_contracts.py runtime",
-    "build:runtime-manifest": "python3 tools/build_release_runtime_manifest.py --release-id 20260813-v1431-creation-queue-stability-1"
+    "build:runtime-manifest": "python3 tools/build_release_runtime_manifest.py --release-id 20260813-v1432-publish-export-1"
   }
 }

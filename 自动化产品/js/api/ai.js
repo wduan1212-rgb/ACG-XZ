@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260813-v1431-creation-queue-stability-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260813-v1432-publish-export-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;

@@ -4,24 +4,24 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260813-v1431-creation-queue-stability-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260813-v1432-publish-export-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260813-v1431-creation-queue-stability-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260813-v1431-creation-queue-stability-1";
+} from "./orchestrator.js?v=20260813-v1432-publish-export-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260813-v1432-publish-export-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260813-v1431-creation-queue-stability-1";
-import { deliver } from "../domain/delivery.js?v=20260813-v1431-creation-queue-stability-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260813-v1432-publish-export-1";
+import { deliver } from "../domain/delivery.js?v=20260813-v1432-publish-export-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260813-v1431-creation-queue-stability-1";
+import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260813-v1432-publish-export-1";
 import { qianfanTopicIdeas } from "../core/remote.js";
-import { validatePublishText } from "../domain/publishRules.js?v=20260813-v1431-creation-queue-stability-1";
+import { validatePublishText } from "../domain/publishRules.js?v=20260813-v1432-publish-export-1";
 
 let mounted = false;
 let rootEl = null;
@@ -620,7 +620,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260813-v1431-creation-queue-stability-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260813-v1432-publish-export-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

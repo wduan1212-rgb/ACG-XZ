@@ -4,15 +4,16 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260813-v1431-creation-queue-stability-1";
+import { setStage, touch } from "./productions.js?v=20260813-v1432-publish-export-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260813-v1431-creation-queue-stability-1";
+import { assertPublishText } from "./publishRules.js?v=20260813-v1432-publish-export-1";
 import {
   accountPublishAvailable,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "./productionQuota.js?v=20260813-v1431-creation-queue-stability-1";
+} from "./productionQuota.js?v=20260813-v1432-publish-export-1";
+import { resolvePublishPlanDate } from "./publishSchedule.js?v=20260813-v1432-publish-export-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -201,14 +202,8 @@ function insertProductTagBeforeDate(name, tag) {
   return String(name || "").replace(/-(20\d{6})$/, `-${tag}-$1`);
 }
 
-function todayPlanDate() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 function normalizePlanDate(value = "") {
-  const raw = String(value || "").trim();
-  return (raw ? raw.slice(0, 10).replace(/\//g, "-") : todayPlanDate());
+  return resolvePublishPlanDate(String(value || "").slice(0, 10).replace(/\//g, "-"));
 }
 
 function markPackImagesShared(p, productTag) {
