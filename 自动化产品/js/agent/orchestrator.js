@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260812-v1428-canvas-batch-stability-1";
+import { AI } from "../api/ai.js?v=20260813-v1429-canvas-durable-batch-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260812-v1428-canvas-batch-stability-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260812-v1428-canvas-batch-stability-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1429-canvas-durable-batch-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1429-canvas-durable-batch-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260812-v1428-canvas-batch-stability-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1429-canvas-durable-batch-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260812-v1428-canvas-batch-stability-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1429-canvas-durable-batch-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";

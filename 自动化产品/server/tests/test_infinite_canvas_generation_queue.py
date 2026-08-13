@@ -159,7 +159,7 @@ def test_pagehide_unmount_and_project_switch_abort_without_resuming_old_batch():
     run_node(script)
 
 
-def test_pagehide_cancels_active_and_queued_generation_without_auto_retry():
+def test_pagehide_stops_polling_after_the_whole_batch_is_registered():
     queue_module = (CANVAS_ROOT / "src" / "lib" / "concurrencyQueue.ts").resolve().as_uri()
     request_module = (CANVAS_ROOT / "src" / "lib" / "request.ts").resolve().as_uri()
     lifecycle_module = (
@@ -173,14 +173,15 @@ def test_pagehide_cancels_active_and_queued_generation_without_auto_retry():
         const {{ CanvasRequestLifecycle }} = await import({json.dumps(lifecycle_module)});
         const lifecycle = new CanvasRequestLifecycle();
         const batchSignal = lifecycle.signal;
-        let upstreamStarted = 0;
+        const registered = Array.from({{ length: 10 }}, (_, index) => `job-${{index}}`);
+        let pollingStarted = 0;
         let active = 0;
         let maxActive = 0;
 
         const jobs = Array.from({{ length: 10 }}, (_, index) => async () =>
           request.runAbortableRequest(async (signal) => {{
             if (signal.aborted) throw signal.reason;
-            upstreamStarted += 1;
+            pollingStarted += 1;
             active += 1;
             maxActive = Math.max(maxActive, active);
             try {{
@@ -202,7 +203,8 @@ def test_pagehide_cancels_active_and_queued_generation_without_auto_retry():
         setTimeout(() => lifecycle.interrupt("pagehide"), 8);
         const results = await batch;
         assert.ok(maxActive <= 3);
-        assert.equal(upstreamStarted, 3, "queued jobs must not start a paid upstream request");
+        assert.deepEqual(registered, Array.from({{ length: 10 }}, (_, index) => `job-${{index}}`));
+        assert.equal(pollingStarted, 3, "pagehide stops only the active browser pollers");
         assert.equal(results.length, 10);
         assert.equal(results.filter((result) => result.status === "fulfilled").length, 0);
         assert.ok(results.every(
@@ -292,6 +294,9 @@ def test_generation_source_contract_persists_progressive_results():
     assert "sourceProjectId: projectId" in source
     assert "backgroundJob: true" in source
     assert "waitCanvasGenerationJob" in source
+    assert "submitCanvasGenerationBatch" in source
+    assert "Register the whole explicit batch in one server transaction" in source
+    assert "const job = await waitCanvasGenerationJob(id" in source
     assert "任务已进入后台队列" in source
     assert "isCanvasConnectivityError" in source
     assert "后台排队中，稍后自动更新" in source
@@ -334,7 +339,7 @@ def load_tests(loader, tests, pattern):
         test_ten_image_queue_is_bounded_ordered_and_failure_isolated,
         test_abort_timeout_499_and_413_are_recognizable,
         test_pagehide_unmount_and_project_switch_abort_without_resuming_old_batch,
-        test_pagehide_cancels_active_and_queued_generation_without_auto_retry,
+        test_pagehide_stops_polling_after_the_whole_batch_is_registered,
         test_hydration_repairs_old_loading_without_touching_mixed_results,
         test_generation_source_contract_persists_progressive_results,
     ):

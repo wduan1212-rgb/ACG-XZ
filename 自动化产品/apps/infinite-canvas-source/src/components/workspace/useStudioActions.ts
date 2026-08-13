@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo } from "react";
 import {
   callAgent,
   callEnhance,
-  callGenerate,
   callTransform,
   materializeCanvasAsset,
   persistCanvasBlob,
+  submitCanvasGenerationBatch,
   waitCanvasGenerationJob,
 } from "@/lib/api";
 import { bestAssetUrlFor, rememberAssetSource } from "@/lib/assetCache";
@@ -604,6 +604,7 @@ export function useStudioActions(projectId: string) {
       setSelection([ids[0]]);
 
       const task = startTask("generate", `生成 · ${size}`);
+      let batchRegistrationStarted = false;
       try {
         const refDesc = references.map((r) => ({ label: labelForItem(r.itemId, items) }));
         // Agent off → the user's words ARE the prompt (native mode).
@@ -692,20 +693,34 @@ export function useStudioActions(projectId: string) {
         // Commit recoverable placeholders before the first paid server job is
         // submitted. Leaving the page now only stops local polling.
         await flushCanvasProjectServer(projectId);
+        // Register the whole explicit batch in one server transaction before
+        // waiting on any provider result. The server drains it in order, so a
+        // refresh/pagehide only stops this tab's polling and cannot strand the
+        // remaining placeholders as jobs that never existed.
+        batchRegistrationStarted = true;
+        await submitCanvasGenerationBatch({
+          sourceProjectId: projectId,
+          operation: "generate",
+          sharedRequest: {
+            ...common,
+            count: 1,
+          },
+          jobs: ids.map((id, index) => ({
+            jobId: id,
+            request: {
+              startVariant: startVariant + index,
+              prompt: prompts[index],
+              idempotencyKey: id,
+            },
+          })),
+        });
         let settledCount = 0;
         const results = await runConcurrentQueue(
           ids.map((id, index) => async () => {
             const usedPrompt = prompts[index];
             throwIfCanvasRequestAborted(requestSignal, "图片生成");
-            const images = await callGenerate({
-              ...common,
-              count: 1,
-              startVariant: startVariant + index,
-              prompt: usedPrompt,
-              idempotencyKey: id,
-              sourceProjectId: projectId,
-            }, { signal: requestSignal });
-            const image = images[0];
+            const job = await waitCanvasGenerationJob(id, { signal: requestSignal });
+            const image = job.images?.[0];
             if (!image?.dataUrl) throw new Error("图片生成未返回结果");
             throwIfCanvasRequestAborted(requestSignal, "图片持久化");
             const persisted = await persistCanvasBlob(image.dataUrl, id, {
@@ -852,6 +867,30 @@ export function useStudioActions(projectId: string) {
         }
       } catch (e) {
         const cancelled = isCanvasRequestCancelled(e);
+        const continuingInBackground = batchRegistrationStarted
+          && (cancelled || isCanvasConnectivityError(e));
+        if (continuingInBackground) {
+          ids.forEach((id, index) => updateItem(projectId, id, {
+            loading: true,
+            generationStatus: "queued",
+            queuePosition: index + 1,
+            queueTotal: ids.length,
+            label: `后台排队中 ${index + 1}/${ids.length}`,
+            error: undefined,
+          } as Partial<CanvasItem>));
+          await flushCanvasProjectLocal(projectId).catch(() => undefined);
+          updateMessage(projectId, agentMsgId, {
+            status: "thinking",
+            text: "整批任务已发往服务器队列，本页连接中断不会取消生成，稍后会自动更新进度。",
+          });
+          task.stop({
+            status: "running",
+            progress: 0.08,
+            resultItemIds: ids,
+            label: `后台排队中 · ${size}`,
+          });
+          return;
+        }
         const message = cancelled
           ? CANVAS_INTERRUPTED_TASK_TEXT
           : canvasRequestUserMessage(e);

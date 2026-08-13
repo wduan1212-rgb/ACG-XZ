@@ -234,6 +234,34 @@ export async function submitCanvasGenerationJob(
   }, { timeoutMs: 30_000, label: "画布后台任务提交", ...requestOptions });
 }
 
+export async function submitCanvasGenerationBatch(
+  payload: {
+    sourceProjectId: string;
+    operation?: "generate";
+    sharedRequest: Record<string, unknown>;
+    jobs: Array<{ jobId: string; request: Record<string, unknown> }>;
+  },
+  requestOptions: AbortableRequestOptions = {},
+): Promise<CanvasGenerationJob[]> {
+  return runAbortableRequest(async (signal) => {
+    const res = await platformFetchWithRetry("/generation-jobs/batch", {
+      method: "POST",
+      signal,
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw canvasHttpError(res.status, await responseDetail(res), "画布后台批量任务提交");
+    }
+    const response = (await res.json()) as { jobs?: CanvasGenerationJob[] };
+    const jobs = Array.isArray(response.jobs) ? response.jobs : [];
+    if (jobs.length !== payload.jobs.length) {
+      throw new Error("画布后台批量任务登记不完整");
+    }
+    payload.jobs.forEach((item) => canvasJobQueries.delete(item.jobId));
+    return jobs;
+  }, { timeoutMs: 30_000, label: "画布后台批量任务提交", ...requestOptions });
+}
+
 function isTerminalCanvasJob(job: CanvasGenerationJob): boolean {
   return job.status === "succeeded" || job.status === "failed";
 }

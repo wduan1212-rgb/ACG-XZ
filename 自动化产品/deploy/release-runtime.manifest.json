@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260812-v1428-canvas-batch-stability-1",
+  "releaseId": "20260813-v1429-canvas-durable-batch-1",
   "fileCount": 65,
-  "totalBytes": 3328588,
+  "totalBytes": 3336020,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 122154,
-      "sha256": "7a4a8baeb85d4df6b32114b69e2683daff9a76dfe0536095ba9c16456e14908c"
+      "size": 122152,
+      "sha256": "705e2c6290fc08e48d9011251363050324e4f8dfa9c074efac08981f500045d0"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -201,8 +201,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 35440,
-      "sha256": "ef2e7660985dcf49ba957b57f6f7941a705ce7d9caf65743d357d7fc41496c9a"
+      "size": 35434,
+      "sha256": "42697a1adf8711ac65f2126a4a0f306b3a50be345d17a54300c2a3b75dcf7580"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 561494,
-      "sha256": "2cc75c2bd852edfdef0c65646b56012e4b3a8c3680dc6cfcdd2147778f56c38d"
+      "size": 565884,
+      "sha256": "ac758937f4bd4e65e20f9490c6c1c1ce870ec81c388bec3995024578e1d130af"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -321,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 922228,
-      "sha256": "79edfad5815b5f48717de768d69037654445645e395a88e4acecd5c148af1074"
+      "size": 925278,
+      "sha256": "c963b39ec468b901e2afe85fa64c4ca816746126fb9e7061deb4fff93e654bb4"
     },
     {
       "path": "tools/verify_release_contracts.py",

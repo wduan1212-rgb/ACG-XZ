@@ -7864,6 +7864,18 @@ class CustomCanvasGenerationJobReq(BaseModel):
     request: dict = Field(default_factory=dict)
 
 
+class CustomCanvasGenerationBatchItemReq(BaseModel):
+    jobId: str = ""
+    request: dict = Field(default_factory=dict)
+
+
+class CustomCanvasGenerationBatchReq(BaseModel):
+    sourceProjectId: str = ""
+    operation: str = "generate"
+    sharedRequest: dict = Field(default_factory=dict)
+    jobs: List[CustomCanvasGenerationBatchItemReq] = Field(default_factory=list)
+
+
 class CustomCanvasProjectDraftReq(BaseModel):
     project: dict
     items: List[dict]
@@ -10358,13 +10370,40 @@ def _start_custom_canvas_generation_task(
     return task
 
 
-@app.post("/api/custom-canvas/generation-jobs", status_code=202)
-async def custom_canvas_generation_job_create(
-    req: CustomCanvasGenerationJobReq,
-    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
-    me=Depends(require_member),
-):
-    _require_custom_creator(me)
+def _start_custom_canvas_generation_batch_task(me, jobs):
+    owner_id = str(me.get("id") or "")
+    batch_key = hashlib.sha256(
+        (owner_id + ":" + ":".join(str(item[0]) for item in jobs)).encode("utf-8")
+    ).hexdigest()
+    task_key = f"{owner_id}:batch:{batch_key}"
+    current = _CUSTOM_CANVAS_GENERATION_TASKS.get(task_key)
+    if current and not current.done():
+        return current
+
+    async def run_batch():
+        # One accepted browser batch is drained in order on the server. Global
+        # provider concurrency still applies across members/features, while a
+        # page refresh can no longer strand the remaining local placeholders.
+        for index, (client_job_id, request_key, operation, task_request) in enumerate(jobs):
+            store.touch_custom_canvas_generation_jobs(
+                owner_id, [item[0] for item in jobs[index:]],
+            )
+            await _run_custom_canvas_generation_job(
+                dict(me), client_job_id, request_key, operation, task_request,
+            )
+
+    task = asyncio.create_task(run_batch())
+    _CUSTOM_CANVAS_GENERATION_TASKS[task_key] = task
+
+    def cleanup(done):
+        if _CUSTOM_CANVAS_GENERATION_TASKS.get(task_key) is done:
+            _CUSTOM_CANVAS_GENERATION_TASKS.pop(task_key, None)
+
+    task.add_done_callback(cleanup)
+    return task
+
+
+def _prepare_custom_canvas_generation_job(req, idempotency_key=""):
     client_job_id = str(req.jobId or "").strip()
     operation = str(req.operation or "generate").strip().lower()
     try:
@@ -10390,6 +10429,19 @@ async def custom_canvas_generation_job_create(
         fingerprint = hashlib.sha256(
             f"{operation}:{fingerprint}".encode("utf-8")
         ).hexdigest()
+    return client_job_id, request_key, operation, task_request, fingerprint
+
+
+@app.post("/api/custom-canvas/generation-jobs", status_code=202)
+async def custom_canvas_generation_job_create(
+    req: CustomCanvasGenerationJobReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    client_job_id, request_key, operation, task_request, fingerprint = (
+        _prepare_custom_canvas_generation_job(req, idempotency_key)
+    )
     try:
         job, _created = store.create_custom_canvas_generation_job(
             me["id"],
@@ -10419,6 +10471,63 @@ async def custom_canvas_generation_job_create(
             task_request,
         )
     return job
+
+
+@app.post("/api/custom-canvas/generation-jobs/batch", status_code=202)
+async def custom_canvas_generation_job_batch_create(
+    req: CustomCanvasGenerationBatchReq,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    operation = str(req.operation or "generate").strip().lower()
+    if operation != "generate" or not 1 <= len(req.jobs or []) <= 10:
+        raise HTTPException(400, "画布后台批量任务无效")
+    prepared = []
+    seen = set()
+    for item in req.jobs:
+        client_job_id = str(item.jobId or "").strip()
+        if not client_job_id or client_job_id in seen:
+            raise HTTPException(400, "画布后台批量任务标识重复或无效")
+        seen.add(client_job_id)
+        merged = {**dict(req.sharedRequest or {}), **dict(item.request or {})}
+        merged["count"] = 1
+        merged["idempotencyKey"] = client_job_id
+        job_req = CustomCanvasGenerationJobReq(
+            jobId=client_job_id,
+            sourceProjectId=req.sourceProjectId,
+            operation="generate",
+            request=merged,
+        )
+        prepared.append(_prepare_custom_canvas_generation_job(job_req))
+    try:
+        stored = store.create_custom_canvas_generation_jobs(
+            me["id"],
+            [{
+                "clientJobId": spec[0],
+                "requestFingerprint": spec[4],
+                "sourceProjectId": req.sourceProjectId,
+            } for spec in prepared],
+        )
+    except PermissionError as exc:
+        reason = str(exc)
+        if reason in {
+            "resource_scope_required",
+            "resource_reference_scope_missing",
+        }:
+            raise HTTPException(409, "画布项目尚未完成服务器同步，请稍后重试")
+        raise HTTPException(403, "画布项目不属于当前账号或团队")
+    except ValueError as exc:
+        if str(exc) == "custom_canvas_generation_job_conflict":
+            raise HTTPException(409, "同一画布任务标识对应了不同请求")
+        raise HTTPException(400, "画布后台批量任务标识无效")
+    runnable = [
+        (spec[0], spec[1], spec[2], spec[3])
+        for spec, (job, _created) in zip(prepared, stored)
+        if str((job or {}).get("status") or "") == "queued"
+    ]
+    if runnable:
+        _start_custom_canvas_generation_batch_task(me, runnable)
+    return {"jobs": [job for job, _created in stored]}
 
 
 @app.get("/api/custom-canvas/generation-jobs/{client_job_id}")

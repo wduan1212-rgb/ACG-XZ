@@ -4,6 +4,7 @@ import importlib
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -23,6 +24,153 @@ main = importlib.import_module("main")
 
 
 class CustomCanvasBackgroundJobTest(unittest.TestCase):
+    def test_store_registers_a_whole_batch_atomically_and_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            jobs = [{
+                "clientJobId": f"batch-job-{index}",
+                "requestFingerprint": hashlib.sha256(
+                    f"batch-request-{index}".encode("utf-8")
+                ).hexdigest(),
+                "sourceProjectId": "project-batch",
+            } for index in range(10)]
+            created = store.create_custom_canvas_generation_jobs("creator-a", jobs)
+            self.assertEqual(len(created), 10)
+            self.assertTrue(all(inserted for _job, inserted in created))
+            self.assertEqual(
+                [job["jobId"] for job, _inserted in created],
+                [f"batch-job-{index}" for index in range(10)],
+            )
+            replay = store.create_custom_canvas_generation_jobs("creator-a", jobs)
+            self.assertTrue(all(not inserted for _job, inserted in replay))
+
+            conflicting = list(jobs)
+            conflicting[-1] = {
+                **conflicting[-1],
+                "requestFingerprint": hashlib.sha256(b"conflict").hexdigest(),
+            }
+            with self.assertRaisesRegex(
+                ValueError, "custom_canvas_generation_job_conflict"
+            ):
+                store.create_custom_canvas_generation_jobs("creator-a", conflicting)
+            for index in range(10):
+                self.assertIsNotNone(store.get_custom_canvas_generation_job(
+                    "creator-a", f"batch-job-{index}"
+                ))
+
+            atomic_conflict = [{
+                "clientJobId": "batch-new-before-conflict",
+                "requestFingerprint": hashlib.sha256(b"new").hexdigest(),
+                "sourceProjectId": "project-batch",
+            }, conflicting[-1]]
+            with self.assertRaisesRegex(
+                ValueError, "custom_canvas_generation_job_conflict"
+            ):
+                store.create_custom_canvas_generation_jobs("creator-a", atomic_conflict)
+            self.assertIsNone(store.get_custom_canvas_generation_job(
+                "creator-a", "batch-new-before-conflict"
+            ))
+
+            before_touch = store.get_custom_canvas_generation_job(
+                "creator-a", "batch-job-1"
+            )["updatedAt"]
+            time.sleep(0.002)
+            self.assertEqual(
+                store.touch_custom_canvas_generation_jobs(
+                    "creator-a", ["batch-job-1", "missing-job"]
+                ),
+                1,
+            )
+            self.assertGreater(
+                store.get_custom_canvas_generation_job(
+                    "creator-a", "batch-job-1"
+                )["updatedAt"],
+                before_touch,
+            )
+
+    def test_server_batch_runner_drains_registered_jobs_in_order(self):
+        calls = []
+
+        async def fake_run(me, client_job_id, request_key, operation, req):
+            del me, request_key, operation, req
+            calls.append(client_job_id)
+            await asyncio.sleep(0)
+
+        jobs = [
+            (f"job-{index}", f"job-{index}", "generate", object())
+            for index in range(4)
+        ]
+
+        async def exercise():
+            with patch.object(
+                main, "_run_custom_canvas_generation_job", new=fake_run
+            ), patch.object(main.store, "touch_custom_canvas_generation_jobs") as touch:
+                task = main._start_custom_canvas_generation_batch_task(
+                    {"id": "creator-a", "role": "editor"}, jobs
+                )
+                await task
+                self.assertEqual(touch.call_count, 4)
+
+        asyncio.run(exercise())
+        self.assertEqual(calls, ["job-0", "job-1", "job-2", "job-3"])
+
+    def test_batch_endpoint_registers_all_jobs_before_starting_the_runner(self):
+        request = main.CustomCanvasGenerationBatchReq(
+            sourceProjectId="project-browser",
+            operation="generate",
+            sharedRequest={
+                "prompt": "shared prompt",
+                "references": ["data:image/png;base64,c2hhcmVk"],
+                "count": 10,
+                "size": "1024x1024",
+            },
+            jobs=[{
+                "jobId": f"browser-job-{index}",
+                "request": {
+                    "prompt": f"prompt {index}",
+                    "startVariant": index + 1,
+                },
+            } for index in range(10)],
+        )
+        stored = [({
+            "jobId": f"browser-job-{index}",
+            "status": "queued",
+        }, True) for index in range(10)]
+
+        async def exercise():
+            with patch.object(
+                main.store, "create_custom_canvas_generation_jobs", return_value=stored,
+            ) as create, patch.object(
+                main, "_start_custom_canvas_generation_batch_task"
+            ) as start:
+                response = await main.custom_canvas_generation_job_batch_create(
+                    request, me={"id": "creator-a", "role": "editor"},
+                )
+                self.assertEqual(len(response["jobs"]), 10)
+                self.assertEqual(create.call_count, 1)
+                persisted = create.call_args.args[1]
+                self.assertEqual(
+                    [item["clientJobId"] for item in persisted],
+                    [f"browser-job-{index}" for index in range(10)],
+                )
+                self.assertTrue(all(
+                    item["sourceProjectId"] == "project-browser" for item in persisted
+                ))
+                self.assertEqual(start.call_count, 1)
+                runnable = start.call_args.args[1]
+                self.assertEqual(len(runnable), 10)
+                self.assertTrue(all(item[3].count == 1 for item in runnable))
+                self.assertEqual(
+                    [item[3].prompt for item in runnable],
+                    [f"prompt {index}" for index in range(10)],
+                )
+                self.assertTrue(all(
+                    item[3].references == ["data:image/png;base64,c2hhcmVk"]
+                    for item in runnable
+                ))
+
+        asyncio.run(exercise())
+
     def test_store_job_resolves_browser_source_id_to_stable_project_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_canvas_store(tmp)

@@ -1,7 +1,7 @@
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { myId, state, save } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260812-v1428-canvas-batch-stability-1";
+import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260813-v1429-canvas-durable-batch-1";
 import { designTtsVoice, refreshProviderStatus, synthesizeTts } from "../api/providers.js";
 import { addAssetFromDataUrl, addAssetFromFile, inferAssetFileMime, removeAsset, urlFor } from "../domain/assets.js";
 import { canManageCustomVoice, deleteCustomVoice, favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";

@@ -1,5 +1,20 @@
 # 星阵版本记录
 
+## v142.9 - 2026-08-13（本地候选：无限画布整批原子登记与页面中断恢复）
+
+### 本版范围
+
+- 修复“用户要求生成 N 张，页面已创建 N 个占位，但浏览器只向服务器逐张提交”的不一致。新建生成批次会把共用参考图、尺寸和每张独立 prompt/job ID 一次送到服务器；服务器在单个 `BEGIN IMMEDIATE` 中要么完整登记 `1–10` 张，要么整批回滚，不再产生“占位存在但后台任务从未存在”。
+- 整批接受后改由服务器顺序排队执行，浏览器只负责轮询和回填。刷新、切换任务版或 `pagehide` 只停止当前页的轮询，已登记的付费任务继续运行；界面显示“后台排队中”，不再误报连接中断或生成失败。
+- 服务器在前一张运行期间持续刷新尚未开始的同批 queued job 时间，防止真实 `10` 张长批次被 `20` 分钟中断恢复阈值误判为服务重启。任何已成功 job 仍不重放，结果未知仍不自动重提 provider。
+- release/cache identity 更新为 `20260813-v1429-canvas-durable-batch-1`。本版不新增 schema、数据迁移、依赖、持久目录、权限或 Nginx 变更；生产只能同步验签代码/静态，不覆盖 SQLite、账号、媒体、任务、认证或私密配置。
+
+### 候选验证边界
+
+- 本地无私密锁定主服务为 `832 collected / 831 passed / 1 approved skip`，视频 sidecar `160/160`，Node `129/129`，画布定向与整批 API 回归 `14/14`；无限画布 typecheck/lint/build/vendor check 全部通过。
+- release verifier 为 Phase 0 `eff3c8a526e28ac2d83366eb22ddfc795b5f905841198664b6ff5ea62171dc0c`，ESM `61 modules / 349 edges`、closure `e00a2266b553cbae2b7a313f9ee2bf0039fb5274a98349cb880d882a490a1eab`，canvas `63 files / 1,772,596 bytes / 6ebf1da77060e6e9752cbb87bed9657afaf2dc0f4e1563a039b8e05bfd3edb72`，runtime `65 files / 3,336,020 bytes / c5b92f62cc9fbd022f624c4d64e2f8b79098088840c4929d834e9b7f2fc3e7ee`。
+- 生产目标 Linux 复验、无流量 sibling 验收、真实付费复杂画布/批量图文与最终切流尚是独立部署门禁，未完成前不写成生产已闭环。
+
 ## v142.8 - 2026-08-12（生产：无限画布数量、状态、发布沟通与 AI 选题稳定性）
 
 ### 生产部署闭环
