@@ -257,5 +257,9 @@ export function productionAllowsJobProcessing(production) {
 }
 
 export function productionCanAdvanceAfterExplicitUpload(production) {
-  return production?.stageStatus === "failed" || production?.stageStatus === "pending";
+  if (["failed", "pending"].includes(String(production?.stageStatus || ""))) return true;
+  // A batch item may be opened in the single-account workshop while its
+  // production still says running. Once every image slot is durably bound,
+  // that workshop completion is authoritative and may settle to review.
+  return production?.stage === "images" && production?.stageStatus === "running";
 }

@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,7 +43,15 @@ class ProviderStartupRaceTests(unittest.TestCase):
     def test_shared_image_queue_never_rejects_a_creator_for_waiting(self):
         main_source = (ROOT / "server" / "main.py").read_text("utf-8")
         self.assertIn(
-            'IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)',
+            'IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 10)',
+            main_source,
+        )
+        self.assertIn(
+            '_positive_env_int("IMAGE_SUBMIT_INITIAL_CONCURRENCY", 6)',
+            main_source,
+        )
+        self.assertIn(
+            'IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 8)',
             main_source,
         )
         queue_section = main_source.split("async def _bounded_submit_slot", 1)[1]
@@ -55,7 +64,7 @@ class ProviderStartupRaceTests(unittest.TestCase):
         from server import main
 
         async def scenario():
-            queue = asyncio.Semaphore(2)
+            queue = asyncio.Semaphore(10)
             active = 0
             peak = 0
             completed = []
@@ -69,12 +78,26 @@ class ProviderStartupRaceTests(unittest.TestCase):
                     completed.append(index)
                     active -= 1
 
-            await asyncio.gather(*(worker(index) for index in range(8)))
+            await asyncio.gather(*(worker(index) for index in range(50)))
             return peak, completed
 
         peak, completed = asyncio.run(scenario())
-        self.assertEqual(peak, 2)
-        self.assertEqual(sorted(completed), list(range(8)))
+        self.assertEqual(peak, 10)
+        self.assertEqual(sorted(completed), list(range(50)))
+
+    def test_image_config_exposes_effective_provider_capacity(self):
+        from server import main
+
+        with patch.object(main, "IMAGE_SUBMIT_CONCURRENCY", 10), patch.object(
+            main, "IMAGE_SUBMIT_INITIAL_CONCURRENCY", 6,
+        ), patch.object(
+            main, "_image_endpoint", return_value="https://image.example/generate",
+        ), patch.object(main, "_resolve_base", return_value=(True, "reachable")):
+            config = main.image_config({"id": "creator-a", "role": "editor"})
+
+        self.assertEqual(10, config["submitConcurrency"])
+        self.assertEqual(6, config["initialSubmitConcurrency"])
+        self.assertTrue(config["adaptiveSubmitConcurrency"])
 
 
 if __name__ == "__main__":

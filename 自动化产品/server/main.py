@@ -179,11 +179,16 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # running loop.  Python 3.9 binds Semaphore/Condition during construction, so
 # module-level instances make a clean import fail after another loop was closed
 # (and can bind production work to the wrong bootstrap loop).
-# Keep enough shared throughput for batch/canvas work without sending three
-# large multi-reference payloads to the current upstream at once.  A caller
-# may still override this operational ceiling explicitly.
-IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 2)
-IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
+# image-2's confirmed provider capacity is ten concurrent requests.  Keep one
+# shared provider budget across batch, canvas and the remaining image surfaces;
+# the fair queue below distributes those lanes without adding a per-creator
+# rejection gate.  Operations may still override the ceiling explicitly.
+IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 10)
+IMAGE_SUBMIT_INITIAL_CONCURRENCY = min(
+    IMAGE_SUBMIT_CONCURRENCY,
+    _positive_env_int("IMAGE_SUBMIT_INITIAL_CONCURRENCY", 6),
+)
+IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 8)
 IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS = _positive_env_int(
     "IMAGE_PROVIDER_HTTP_TIMEOUT_SECONDS", 270
 )
@@ -221,11 +226,35 @@ async def _bounded_submit_slot(queue):
 class _FairImageSubmitQueue:
     """Round-robin provider admission across member/surface queues."""
 
-    def __init__(self, limit: int):
-        self.limit = max(1, int(limit))
+    def __init__(self, limit: int, initial_limit: Optional[int] = None):
+        self.max_limit = max(1, int(limit))
+        self.limit = min(
+            self.max_limit,
+            max(1, int(initial_limit if initial_limit is not None else self.max_limit)),
+        )
         self.active = 0
         self.waiters = {}
         self.rotation = deque()
+        self.success_credit = 0
+
+    def note_busy(self):
+        """Yield account-wide capacity when another process holds provider lanes."""
+
+        self.limit = max(1, self.limit - 1)
+        self.success_credit = 0
+
+    def note_success(self):
+        """Recover surrendered capacity gradually after sustained success."""
+
+        if self.limit >= self.max_limit:
+            self.success_credit = 0
+            return
+        self.success_credit += 1
+        if self.success_credit < max(2, self.limit):
+            return
+        self.limit += 1
+        self.success_credit = 0
+        self._dispatch()
 
     def _dispatch(self):
         while self.active < self.limit and self.rotation:
@@ -292,7 +321,7 @@ async def _fair_image_submit_slot(queue, key: str):
     try:
         await queue.acquire(key)
         acquired = True
-        yield
+        yield queue
     finally:
         if acquired:
             queue.release()
@@ -302,7 +331,10 @@ def _image_submit_queue(attempt_ledger=None):
     loop = asyncio.get_running_loop()
     queue = _IMAGE_SUBMIT_QUEUES.get(loop)
     if queue is None:
-        queue = _FairImageSubmitQueue(IMAGE_SUBMIT_CONCURRENCY)
+        queue = _FairImageSubmitQueue(
+            IMAGE_SUBMIT_CONCURRENCY,
+            IMAGE_SUBMIT_INITIAL_CONCURRENCY,
+        )
         _IMAGE_SUBMIT_QUEUES[loop] = queue
     return _fair_image_submit_slot(queue, _image_submit_fair_key(attempt_ledger))
 
@@ -1243,7 +1275,10 @@ class BatchImageGenerationJobReq(BaseModel):
     accountId: str
     itemIndex: int = Field(ge=0, le=47)
     operationKey: str
-    requestFingerprint: str
+    # Compatibility-only. The browser is not a trusted hashing boundary and
+    # WebCrypto is unavailable on the product's HTTP IP origin. The store
+    # always derives the canonical fingerprint from normalized request data.
+    requestFingerprint: str = ""
     prompt: str
     refs: List[BatchImageGenerationRef] = Field(default_factory=list)
     ratio: str = "3:4"
@@ -1862,7 +1897,7 @@ async def _post_json_with_retry(
     last_data = None
     for attempt in range(retries + 1):
         try:
-            async with _image_submit_queue(attempt_ledger):
+            async with _image_submit_queue(attempt_ledger) as submit_queue:
                 # Queue admission is explicitly not a provider attempt. Open
                 # the durable usage receipt only after a slot is acquired and
                 # immediately before the network call.
@@ -1872,6 +1907,30 @@ async def _post_json_with_retry(
                     else None
                 )
                 r = await client.post(endpoint, json=body, headers=headers)
+                ctype = r.headers.get("content-type") or ""
+                try:
+                    data = r.json() if "json" in ctype else {"raw": r.text[:4000]}
+                except Exception:
+                    data = {"raw": r.text[:4000]}
+                detail = _http_detail(data) if data else r.text[:1000]
+                business_failed = bool(
+                    isinstance(data, dict)
+                    and (
+                        data.get("error")
+                        or str(data.get("status") or "").lower() == "failed"
+                    )
+                )
+                busy = _is_image_busy_error(detail) and (
+                    r.status_code >= 400 or business_failed
+                )
+                if busy and submit_queue is not None:
+                    submit_queue.note_busy()
+                elif (
+                    submit_queue is not None
+                    and r.status_code < 400
+                    and not business_failed
+                ):
+                    submit_queue.note_success()
         except asyncio.CancelledError as exc:
             if attempt_ledger is not None:
                 await attempt_ledger.mark_latest(exc, definitive=False)
@@ -1881,16 +1940,10 @@ async def _post_json_with_retry(
             # the final attempt open so the owning route can mark it unknown.
             raise
         last_r = r
-        ctype = r.headers.get("content-type") or ""
-        try:
-            data = r.json() if "json" in ctype else {"raw": r.text[:4000]}
-        except Exception:
-            data = {"raw": r.text[:4000]}
         last_data = data
-        if r.status_code < 400:
+        if r.status_code < 400 and not business_failed:
             return r, data
-        detail = _http_detail(data) if data else r.text[:1000]
-        if _is_image_busy_error(detail) and attempt < retries:
+        if busy and attempt < retries:
             if attempt_ledger is not None:
                 await attempt_ledger.finish_retry(
                     attempt_receipt,
@@ -1916,13 +1969,36 @@ async def _post_image_form_with_retry(
     last_response = None
     for attempt in range(retries + 1):
         try:
-            async with _image_submit_queue(attempt_ledger):
+            async with _image_submit_queue(attempt_ledger) as submit_queue:
                 attempt_receipt = (
                     await attempt_ledger.acquire()
                     if attempt_ledger is not None
                     else None
                 )
                 response = await client.post(endpoint, data=data, files=files, headers=headers)
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
+                detail = _http_detail(payload) if payload else response.text[:1000]
+                business_failed = bool(
+                    isinstance(payload, dict)
+                    and (
+                        payload.get("error")
+                        or str(payload.get("status") or "").lower() == "failed"
+                    )
+                )
+                busy = _is_image_busy_error(detail) and (
+                    response.status_code >= 400 or business_failed
+                )
+                if busy and submit_queue is not None:
+                    submit_queue.note_busy()
+                elif (
+                    submit_queue is not None
+                    and response.status_code < 400
+                    and not business_failed
+                ):
+                    submit_queue.note_success()
         except asyncio.CancelledError as exc:
             if attempt_ledger is not None:
                 await attempt_ledger.mark_latest(exc, definitive=False)
@@ -1930,12 +2006,7 @@ async def _post_image_form_with_retry(
         except httpx.RequestError:
             raise
         last_response = response
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        detail = _http_detail(payload) if payload else response.text[:1000]
-        if response.status_code >= 400 and _is_image_busy_error(detail) and attempt < retries:
+        if busy and attempt < retries:
             if attempt_ledger is not None:
                 await attempt_ledger.finish_retry(
                     attempt_receipt,
@@ -2478,11 +2549,15 @@ class _ModelUsageAttempts:
                 detail = _http_detail(response.json()) or response.text[:800] or detail
             except Exception:
                 detail = str(getattr(response, "text", "") or detail)[:800]
-            provider_error = HTTPException(status_code or 502, detail)
+            busy = _is_image_busy_error(detail)
+            provider_error = HTTPException(
+                429 if busy and status_code < 400 else (status_code or 502),
+                detail,
+            )
             await _mark_model_usage_call_async(
                 receipt,
                 provider_error,
-                definitive=400 <= status_code < 500,
+                definitive=(busy and status_code < 400) or 400 <= status_code < 500,
             )
         self._remember_terminal(receipt)
 
@@ -2961,6 +3036,14 @@ def _qianfan_tags(value) -> List[str]:
     return tags
 
 
+def _qianfan_topic_error_message(error: BaseException) -> str:
+    detail = getattr(error, "detail", "") if isinstance(error, HTTPException) else str(error or "")
+    if isinstance(detail, dict):
+        detail = detail.get("message") or detail.get("detail") or detail.get("code") or ""
+    cleaned = re.sub(r"\s+", " ", str(detail or "")).strip()
+    return _qianfan_trim(cleaned or "该账号本轮未生成完整内容", 240)
+
+
 def _qianfan_normalize_topic_items(
     payload: dict,
     accounts: List[QianfanTopicAccount],
@@ -3199,12 +3282,23 @@ async def qianfan_topic_ideas(
             )
 
         generated_by_account = {}
+        errors_by_account = {}
         chunk_size = 6
         for index in range(0, len(accounts), chunk_size):
             chunk = accounts[index:index + chunk_size]
-            chunk_items = await generate_account_chunk(chunk, phase=f"chunk-{index // chunk_size + 1}")
+            try:
+                chunk_items = await generate_account_chunk(
+                    chunk,
+                    phase=f"chunk-{index // chunk_size + 1}",
+                )
+            except Exception as exc:
+                message = _qianfan_topic_error_message(exc)
+                for account in chunk:
+                    errors_by_account[str(account.id)] = message
+                continue
             for item in chunk_items:
                 generated_by_account[item["accountId"]] = item
+                errors_by_account.pop(item["accountId"], None)
 
         missing_accounts = [
             account for account in accounts
@@ -3213,27 +3307,46 @@ async def qianfan_topic_ideas(
         # 模型偶尔会在多账号 JSON 中漏一行。只针对漏项逐账号修复，已生成账号不重跑，
         # 从而保证“选了多少账号就预览多少行”，同时避免覆盖或重复调用已完成账号。
         for index, account in enumerate(missing_accounts, start=1):
-            repaired = await generate_account_chunk(
-                [account],
-                phase=f"repair-{index}",
-                single_account_fallback=True,
-            )
+            account_id = str(account.id)
+            try:
+                repaired = await generate_account_chunk(
+                    [account],
+                    phase=f"repair-{index}",
+                    single_account_fallback=True,
+                )
+            except Exception as exc:
+                errors_by_account[account_id] = _qianfan_topic_error_message(exc)
+                continue
             if repaired:
-                generated_by_account[str(account.id)] = repaired[0]
+                generated_by_account[account_id] = repaired[0]
+                errors_by_account.pop(account_id, None)
+            else:
+                errors_by_account[account_id] = "该账号本轮未生成完整内容"
 
         still_missing = [
             str(account.id) for account in accounts
             if str(account.id) not in generated_by_account
         ]
-        if still_missing:
-            raise HTTPException(502, f"还有 {len(still_missing)} 个账号未生成完整内容，请重新生成预览")
-        items = [generated_by_account[str(account.id)] for account in accounts]
+        items = [
+            generated_by_account[str(account.id)]
+            for account in accounts
+            if str(account.id) in generated_by_account
+        ]
         return {
             "query": query,
             "recency": recency,
             "requestId": str(search_data.get("request_id") or "") if isinstance(search_data, dict) else "",
             "references": references,
             "items": items,
+            "complete": not still_missing,
+            "missingAccountIds": still_missing,
+            "errors": [
+                {
+                    "accountId": account_id,
+                    "message": errors_by_account.get(account_id) or "该账号本轮未生成完整内容",
+                }
+                for account_id in still_missing
+            ],
         }
 
     result, settlement = await _run_personal_billable(
@@ -3875,6 +3988,9 @@ def image_config(_me=Depends(require_creator)):
         "reachable": reachable,
         "detail": detail,
         "model": IMAGE_MODEL,
+        "submitConcurrency": IMAGE_SUBMIT_CONCURRENCY,
+        "initialSubmitConcurrency": IMAGE_SUBMIT_INITIAL_CONCURRENCY,
+        "adaptiveSubmitConcurrency": True,
         "referenceReceipt": True,
         "mode": (
             "responses" if _image_is_responses_mode(endpoint=endpoint)

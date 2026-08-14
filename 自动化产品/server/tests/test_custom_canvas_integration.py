@@ -893,7 +893,7 @@ console.log(JSON.stringify({{
         self.assertIn("nextReleaseId === canvasReleaseId", integration)
         self.assertIn("iframe.src = canvasEntryUrl(currentProjectId)", integration)
         self.assertIn("}, 60_000);", integration)
-        self.assertNotIn("v=20260814-v1434-durable-batch-jobs-1", integration)
+        self.assertNotIn("v=20260815-v1435-ai-topic-partial-1", integration)
 
     def test_fastapi_mounts_canvas_without_exposing_external_source_tree(self):
         mounts = [getattr(route, "path", "") for route in main.app.routes]
@@ -1851,6 +1851,77 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         unknown.assert_not_called()
         self.assertEqual(complete.call_args.args[0], "busy-attempt-2")
         self.assertEqual(complete.call_args.kwargs["calls"], 1)
+
+    async def test_http_200_business_busy_is_retried_and_reduces_local_capacity(self):
+        class DummyResponse:
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def __init__(self, payload):
+                self.status_code = 200
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        class DummyClient:
+            def __init__(self):
+                self.responses = [
+                    DummyResponse({
+                        "status": "failed",
+                        "error": "type:business, code:1002, msg:当前已达到10个任务上限，请稍后重试",
+                    }),
+                    DummyResponse({"data": [{"b64_json": "AA=="}]}),
+                ]
+
+            async def post(self, *_args, **_kwargs):
+                return self.responses.pop(0)
+
+        attempts = main._CanvasModelUsageAttempts(
+            {"id": "member-user", "role": "user"},
+            feature="无限画布图片生成",
+            usage_kind="image",
+            operation="canvas.generate",
+            idempotency_key="image-business-busy-retry",
+            request_fingerprint="b" * 64,
+            provider="image.example",
+            model="image-test",
+        )
+        queue = main._FairImageSubmitQueue(10)
+        begin_rows = [
+            {"receiptId": "business-busy-1", "shouldCallProvider": True},
+            {"receiptId": "business-busy-2", "shouldCallProvider": True},
+        ]
+        with ExitStack() as stack:
+            begin = stack.enter_context(patch.object(
+                main.store, "begin_model_usage_receipt", side_effect=begin_rows,
+            ))
+            failed = stack.enter_context(patch.object(main.store, "fail_model_usage_receipt"))
+            unknown = stack.enter_context(patch.object(main.store, "mark_model_usage_receipt_unknown"))
+            stack.enter_context(patch.object(main.store, "reconcile_model_usage_outbox"))
+            stack.enter_context(patch.object(main.asyncio, "sleep", new=AsyncMock()))
+            stack.enter_context(patch.object(
+                main, "_image_submit_queue",
+                side_effect=lambda _ledger=None: main._fair_image_submit_slot(
+                    queue, "member-user:infinite-canvas",
+                ),
+            ))
+            await attempts.prime()
+            response, data = await main._post_json_with_retry(
+                DummyClient(),
+                "https://image.example/generate",
+                {"prompt": "test"},
+                {},
+                retries=1,
+                attempt_ledger=attempts,
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"data": [{"b64_json": "AA=="}]}, data)
+        self.assertEqual(2, begin.call_count)
+        failed.assert_called_once()
+        unknown.assert_not_called()
+        self.assertEqual(9, queue.limit)
 
     async def test_provider_acceptance_stays_succeeded_when_local_image_download_fails(self):
         class DummyClient:

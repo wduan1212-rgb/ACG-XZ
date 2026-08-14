@@ -1,8 +1,12 @@
+import json
 import tempfile
 import unittest
 import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import patch
+
+from fastapi import HTTPException
 
 from server import main, store
 
@@ -133,11 +137,13 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertEqual(1, len(items))
         self.assertEqual("only", items[0]["accountId"])
 
-    def test_qianfan_route_repairs_missing_accounts_instead_of_returning_partial_preview(self):
+    def test_qianfan_route_repairs_missing_accounts_and_returns_partial_preview(self):
         source = Path(main.__file__).read_text(encoding="utf-8")
         self.assertIn("for index, account in enumerate(missing_accounts, start=1)", source)
         self.assertIn("single_account_fallback=True", source)
-        self.assertIn("还有 {len(still_missing)} 个账号未生成完整内容", source)
+        self.assertIn('"missingAccountIds": still_missing', source)
+        self.assertIn('errors_by_account[account_id] = _qianfan_topic_error_message(exc)', source)
+        self.assertNotIn("还有 {len(still_missing)} 个账号未生成完整内容", source)
         self.assertIn("不要根据账号定位、人设、语气或历史文风改写", source)
         self.assertIn("干货拆解", source)
         self.assertIn("自然的真人分享", source)
@@ -161,6 +167,105 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertIn('operation="video.submit.seedance"', source)
         self.assertNotIn('_record_model_api_usage(member, "image", "图片生成"', source)
         self.assertNotIn('_record_model_api_usage(_me, "video", "视频生成"', source)
+
+
+class QianfanTopicPartialResponseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_accounts_are_returned_and_only_successes_are_counted(self):
+        accounts = [
+            main.QianfanTopicAccount(
+                id=f"account-{index}",
+                name=f"账号{index}",
+                platform="小红书",
+            )
+            for index in range(1, 9)
+        ]
+        request = main.QianfanTopicReq(query="AI 行业动态", recency="week", accounts=accounts)
+
+        class SearchResponse:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json():
+                return {
+                    "request_id": "search-partial-1",
+                    "references": [{
+                        "id": 1,
+                        "title": "公开资料",
+                        "url": "https://example.com/source",
+                        "content": "用于测试的公开事实资料",
+                    }],
+                }
+
+        class SearchClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                return SearchResponse()
+
+        def llm_payload(account_ids):
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "items": [{
+                        "accountId": account_id,
+                        "title": f"{account_id}标题",
+                        "copy": f"{account_id}正文",
+                        "sourceIds": [1],
+                    } for account_id in account_ids],
+                }, ensure_ascii=False)}}],
+            }
+
+        provider_results = [
+            llm_payload([f"account-{index}" for index in range(1, 7)]),
+            HTTPException(503, "模型繁忙"),
+            llm_payload(["account-7"]),
+            HTTPException(503, "模型仍繁忙"),
+        ]
+
+        async def fake_call_llm(_body, **_kwargs):
+            result = provider_results.pop(0)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        async def fake_finish(_ledger, response, **_kwargs):
+            return response
+
+        async def fake_billable(_member, *, operation, **_kwargs):
+            return await operation(), {"status": "settled", "bypassed": True}
+
+        usage = []
+        with (
+            patch.object(main, "QIANFAN_SEARCH_API_KEY", "test-search-key"),
+            patch.object(main, "LLM_API_KEY", "test-llm-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda **_kwargs: SearchClient()),
+            patch.object(main, "_main_provider_attempts", return_value=object()),
+            patch.object(main, "_call_llm", side_effect=fake_call_llm),
+            patch.object(main, "_finish_llm_attempt", side_effect=fake_finish),
+            patch.object(main, "_run_personal_billable", side_effect=fake_billable),
+            patch.object(store, "record_api_usage", side_effect=lambda *args, **kwargs: usage.append((args, kwargs)) or True),
+        ):
+            result = await main.qianfan_topic_ideas(
+                request,
+                _me={"id": "member-1", "name": "测试成员"},
+                idempotency_key="partial-topic-test",
+            )
+
+        self.assertEqual(
+            [f"account-{index}" for index in range(1, 8)],
+            [item["accountId"] for item in result["items"]],
+        )
+        self.assertFalse(result["complete"])
+        self.assertEqual(["account-8"], result["missingAccountIds"])
+        self.assertEqual("account-8", result["errors"][0]["accountId"])
+        self.assertIn("模型仍繁忙", result["errors"][0]["message"])
+        self.assertEqual(1, len(usage))
+        self.assertEqual(7, usage[0][0][5])
+        self.assertEqual([], provider_results)
 
 
 if __name__ == "__main__":

@@ -1,22 +1,6 @@
 import * as remote from "../core/remote.js";
 import { delay } from "../core/util.js";
 
-function stableValue(value) {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.keys(value).sort().map(key => [key, stableValue(value[key])])
-    );
-  }
-  return value;
-}
-
-export async function batchImageJobFingerprint(value) {
-  const encoded = new TextEncoder().encode(JSON.stringify(stableValue(value)));
-  const digest = await crypto.subtle.digest("SHA-256", encoded);
-  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
 async function jsonRequest(path, { method = "GET", body, timeoutMs = 20000 } = {}) {
   const controller = new AbortController();
   const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
@@ -55,9 +39,7 @@ async function jsonRequest(path, { method = "GET", body, timeoutMs = 20000 } = {
 }
 
 export async function registerBatchImageJobs(jobs) {
-  const prepared = [];
-  for (const raw of jobs || []) {
-    const fingerprintValue = {
+  const prepared = (jobs || []).map(raw => ({
       clientJobId: raw.clientJobId,
       productionId: raw.productionId,
       accountId: raw.accountId,
@@ -67,12 +49,7 @@ export async function registerBatchImageJobs(jobs) {
       refs: raw.refs || [],
       ratio: raw.ratio || "3:4",
       assetName: raw.assetName || "",
-    };
-    prepared.push({
-      ...fingerprintValue,
-      requestFingerprint: await batchImageJobFingerprint(fingerprintValue),
-    });
-  }
+  }));
   return jsonRequest("/api/batch-image/generation-jobs", {
     method: "POST",
     body: { jobs: prepared },

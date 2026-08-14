@@ -134,14 +134,17 @@ test("workspace sidebar collapses to a white reversible icon rail with home and 
   assert.match(videoWorkshopCss, /voice-rail-collapsed[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+48px/);
 });
 
-test("batch AI topics preview verified search results and project controls are guarded", () => {
+test("batch AI topics preserve partial results, fill successes, and retry only missing accounts", () => {
   assert.match(agentCardsJs, /data-act="plan-ai-topic"/);
   assert.match(agentViewJs, /qianfanTopicIdeas\(/);
   assert.match(agentViewJs, /填入空白行/);
-  assert.match(agentViewJs, /为全部所选账号生成候选内容/);
+  assert.match(agentViewJs, /逐账号保存生成结果/);
+  assert.match(agentViewJs, /先填入已生成的/);
+  assert.match(agentViewJs, /aiTopicAccountIdsToGenerate/);
+  assert.match(agentViewJs, /m\.payload\.aiTopicDraft = preview/);
+  assert.match(agentViewJs, /accounts\.filter\(account => requestedSet\.has/);
   assert.doesNotMatch(agentViewJs, /按账号风格生成候选内容/);
-  assert.match(agentViewJs, /系统不会只填部分账号/);
-  assert.match(agentViewJs, /missingAccounts\.length\s*>\s*0/);
+  assert.doesNotMatch(agentViewJs, /系统不会只填部分账号/);
   assert.match(agentViewJs, /data-batchpause/);
   assert.match(agentViewJs, /再次确认永久删除/);
   assert.match(agentOrchestratorJs, /export function setBatchPaused/);
@@ -429,7 +432,7 @@ test("canvas embed avoids the legacy home and keeps one platform rail with botto
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260814-v1434-durable-batch-jobs-1/);
+  assert.match(videoWorkshopHtml, /20260815-v1435-ai-topic-partial-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -873,26 +876,26 @@ test("canvas and video switches wait for the real latest project before routing"
 test("all modified workspace-shell resources use the v141 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260814-v1434-durable-batch-jobs-1/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260815-v1435-ai-topic-partial-1"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260815-v1435-ai-topic-partial-1/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260815-v1435-ai-topic-partial-1"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
-  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260814-v1434-durable-batch-jobs-1"/);
+  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260815-v1435-ai-topic-partial-1"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260814-v1434-durable-batch-jobs-1/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260814-v1434-durable-batch-jobs-1"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260815-v1435-ai-topic-partial-1/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260815-v1435-ai-topic-partial-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

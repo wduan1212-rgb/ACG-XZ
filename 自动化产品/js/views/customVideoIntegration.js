@@ -1,5 +1,5 @@
 const mounted = new WeakMap();
-const CUSTOM_VIDEO_FRAME_RELEASE = "20260814-v1434-durable-batch-jobs-1";
+const CUSTOM_VIDEO_FRAME_RELEASE = "20260815-v1435-ai-topic-partial-1";
 
 function normalizedOutput(raw) {
   const source = raw && typeof raw === "object" ? raw : {};

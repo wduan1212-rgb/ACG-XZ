@@ -589,14 +589,145 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn('retryAction === "confirm"', orchestrator)
         self.assertIn('"IMAGE_PROVIDER_RESULT_UNKNOWN"', server)
         self.assertIn('status="confirming" if confirming else "failed"', server)
-        self.assertIn("requestFingerprint: await batchImageJobFingerprint", jobs)
+        self.assertNotIn("crypto.subtle", jobs)
+        self.assertNotIn("requestFingerprint", jobs)
         self.assertIn("waitForBatchImageJob", jobs)
-        self.assertIn('status: generated.confirmingIndexes?.length ? "result-confirming" : "missing-images"', orchestrator)
+        self.assertIn('status: generated?.confirmingIndexes?.length ? "result-confirming" : "missing-images"', orchestrator)
         self.assertIn('if (!it.assetId && it.status === "confirming")', orchestrator)
         self.assertIn('prepareExplicitBatchImageRetry(p)', orchestrator)
         self.assertIn('RESETTABLE_BATCH_MEDIA_ISSUES.has(issue.reason)', orchestrator)
         cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
         self.assertIn("重试缺失图片", cards)
+
+    def test_batch_registration_works_without_secure_context_webcrypto(self):
+        result = self.run_node(
+            """
+            Object.defineProperty(globalThis, "crypto", { value:{}, configurable:true });
+            globalThis.localStorage = { getItem(){ return "test-token"; }, setItem(){}, removeItem(){} };
+            let request = null;
+            globalThis.fetch = async (path, options) => {
+              request = { path, options, body:JSON.parse(options.body) };
+              return { ok:true, status:200, async json(){ return { ok:true, jobs:[{ status:"queued" }] }; } };
+            };
+            const { registerBatchImageJobs } = await import("./js/api/batchImageJobs.js");
+            const response = await registerBatchImageJobs([{
+              clientJobId:"job-one", productionId:"production-one", accountId:"account-one",
+              itemIndex:0, operationKey:"operation-one", prompt:"真实提交", refs:[], ratio:"3:4",
+              assetName:"结果一"
+            }]);
+            console.log(JSON.stringify({
+              status:response.jobs[0].status,
+              path:request.path,
+              hasFingerprint:Object.hasOwn(request.body.jobs[0], "requestFingerprint"),
+              prompt:request.body.jobs[0].prompt,
+            }));
+            """
+        )
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["path"], "/api/batch-image/generation-jobs")
+        self.assertFalse(result["hasFingerprint"])
+        self.assertEqual(result["prompt"], "真实提交")
+
+    def test_explicit_failed_image_retry_reaches_durable_registration_and_settles(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return ""; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://192.0.2.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            let registered = [];
+            globalThis.fetch = async (path, options = {}) => {
+              if (path === "/api/batch-image/generation-jobs" && options.method === "POST") {
+                registered.push(...JSON.parse(options.body).jobs);
+                return { ok:true, status:200, async json(){ return { ok:true, jobs:[] }; } };
+              }
+              if (String(path).startsWith("/api/batch-image/generation-jobs/")) {
+                const jobId = decodeURIComponent(String(path).split("/").pop());
+                return { ok:true, status:200, async json(){ return { job:{
+                  jobId, operationKey:jobId, status:"succeeded", updatedAt:Date.now(),
+                  asset:{ id:"asset-retried", type:"图片", accountId:"account-one", name:"重试成图" }
+                } }; } };
+              }
+              return { ok:true, status:200, async json(){ return {}; }, async text(){ return "{}"; } };
+            };
+            const { state } = await import("./js/core/store.js");
+            const { retryFailedIn } = await import("./js/agent/orchestrator.js");
+            state.apiKeys = [{ type:"image", provider:"https://example.invalid/v1", secret:"test-only" }];
+            state.accounts = [{ id:"account-one", name:"测试账号", mode:"图文", platform:"小红书" }];
+            state.assets = [{ id:"asset-existing", type:"图片", accountId:"account-one", name:"已成功图" }];
+            const production = {
+              id:"production-one", batchId:"batch-one", accountId:"account-one", mode:"图文",
+              stage:"images", stageStatus:"failed", error:"上次生成失败", title:"重试验证",
+              artifacts:{ copy:{ title:"重试验证", body:"正文已就绪" }, images:{ items:[
+                { prompt:"重试这一张", status:"failed", error:"旧错误", generationRevision:0 },
+                { prompt:"保留这一张", status:"done", assetId:"asset-existing" },
+              ] } }, review:{ state:"pending" },
+            };
+            const batch = { id:"batch-one", topic:"重试测试", phase:"review", productionIds:[production.id], accountIds:["account-one"] };
+            state.productions = [production];
+            state.batches = [batch];
+            const accepted = retryFailedIn(batch);
+            const deadline = Date.now() + 3000;
+            while (production.stage !== "review" && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            console.log(JSON.stringify({
+              accepted,
+              registrations:registered.length,
+              clientJobId:registered[0]?.clientJobId || "",
+              submittedIndexes:registered.map(job => job.itemIndex),
+              assetIds:production.artifacts.images.items.map(item => item.assetId || ""),
+              stage:production.stage,
+              stageStatus:production.stageStatus,
+              error:production.error || "",
+            }));
+            """
+        )
+        self.assertEqual(result["accepted"], 1)
+        self.assertEqual(result["registrations"], 1)
+        self.assertIn("revision-1", result["clientJobId"])
+        self.assertEqual(result["submittedIndexes"], [0])
+        self.assertEqual(result["assetIds"], ["asset-retried", "asset-existing"])
+        self.assertEqual(result["stage"], "review")
+        self.assertEqual(result["stageStatus"], "pending")
+        self.assertEqual(result["error"], "")
+
+    def test_running_image_workshop_completion_advances_directly_to_review(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { maybeAdvanceAfterInput } = await import("./js/agent/orchestrator.js");
+            const production = {
+              id:"micro-adjusted", mode:"图文", stage:"images", stageStatus:"running",
+              artifacts:{ copy:{ title:"标题", body:"正文" }, images:{ items:[
+                { assetId:"asset-one", status:"done" },
+                { assetId:"asset-two", status:"done" },
+              ] } },
+            };
+            const advanced = maybeAdvanceAfterInput(production);
+            console.log(JSON.stringify({ advanced, stage:production.stage, stageStatus:production.stageStatus }));
+            """
+        )
+        self.assertTrue(result["advanced"])
+        self.assertEqual(result["stage"], "review")
+        self.assertEqual(result["stageStatus"], "pending")
+
+    def test_batch_and_refinement_share_one_durable_completion_settlement(self):
+        source = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        helper = source.index("async function persistBatchImageSettlement")
+        regenerate = source.index("export async function regenerateBatchImage")
+        runner = source.index("async function runBatchImagesToReview")
+        self.assertGreater(source.index("await persistBatchImageSettlement(p, generated);", regenerate), regenerate)
+        self.assertGreater(source.index("return await persistBatchImageSettlement(p, generated);", runner), runner)
+        self.assertIn('setStage(p, "review", "pending");', source[helper:regenerate])
+
+        boards = (APP_DIR / "js/views/chainBoards.js").read_text(encoding="utf-8")
+        drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
+        self.assertNotIn('complete && ["failed", "pending"].includes(p.stageStatus)', boards)
+        self.assertNotIn('complete && ["failed", "pending"].includes(p.stageStatus)', drawer)
 
     def test_review_transition_clears_stale_production_and_item_errors(self):
         result = self.run_node(

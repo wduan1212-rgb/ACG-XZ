@@ -17660,7 +17660,6 @@ def create_batch_image_generation_jobs(owner_id, jobs):
         production_id = str(raw.get("productionId") or "").strip()
         account_id = str(raw.get("accountId") or "").strip()
         operation_key = str(raw.get("operationKey") or "").strip()
-        fingerprint = str(raw.get("requestFingerprint") or "").strip()
         prompt = str(raw.get("prompt") or "").strip()
         try:
             item_index = int(raw.get("itemIndex"))
@@ -17701,8 +17700,6 @@ def create_batch_image_generation_jobs(owner_id, jobs):
             or not prompt
             or len(prompt) > 16000
             or item_index < 0
-            or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
-            or not hmac.compare_digest(fingerprint, expected_fingerprint)
         ):
             raise ValueError("invalid_batch_image_generation_job")
         seen.add(job_id)
@@ -17713,7 +17710,7 @@ def create_batch_image_generation_jobs(owner_id, jobs):
             "accountId": account_id,
             "itemIndex": item_index,
             "operationKey": operation_key[:180],
-            "requestFingerprint": fingerprint,
+            "requestFingerprint": expected_fingerprint,
             "prompt": prompt,
             "refs": refs,
             "ratio": ratio,

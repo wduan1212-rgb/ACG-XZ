@@ -3,10 +3,10 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
-import { STAGES, statusPill, deleteProduction } from "../domain/productions.js?v=20260814-v1434-durable-batch-jobs-1";
+import { STAGES, statusPill, deleteProduction } from "../domain/productions.js?v=20260815-v1435-ai-topic-partial-1";
 import { urlFor } from "../domain/assets.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260814-v1434-durable-batch-jobs-1";
-import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260814-v1434-durable-batch-jobs-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260815-v1435-ai-topic-partial-1";
+import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260815-v1435-ai-topic-partial-1";
 import { go } from "../core/router.js";
 
 const DRAFT_RENDER_BATCH = 24;
@@ -19,13 +19,18 @@ function draftProductions() {
 
 function draftRowHtml(p, selected) {
   const [label, cls] = statusPill(p);
-  const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
+  const artifacts = p?.artifacts || {};
+  const items = (
+    p.mode === "图文"
+      ? artifacts.images?.items
+      : artifacts.boards?.items
+  ) || [];
   const cover = items.find(x => x.assetId);
   const u = cover ? urlFor(cover.assetId) : null;
   return `<div class="draft-row ${p.stageStatus === "failed" ? "fail" : ""}" data-draft="${p.id}">
     <input class="draft-check" type="checkbox" data-draft-check="${p.id}" ${selected.has(p.id) ? "checked" : ""} aria-label="选择草稿" />
     <span class="draft-cover">${u ? `<img src="${u}" alt="" loading="lazy" decoding="async" fetchpriority="low"/>` : `<i class="draft-cover-empty">${icon(p.mode === "图文" ? "image" : "video", 15)}</i>`}</span>
-    <span class="draft-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名创作")}</b><em>${STAGES[p.stage]?.label || p.stage} · ${timeAgo(p.updatedAt)}</em></span>
+    <span class="draft-main"><b>${esc(artifacts.copy?.title || p.title || p.topic || "未命名创作")}</b><em>${STAGES[p.stage]?.label || p.stage || "待处理"} · ${timeAgo(p.updatedAt)}</em></span>
     <span class="status-pill ${cls}">${label}</span>
     <button class="btn ghost sm" data-draft-go="${p.id}">继续 ${icon("arrowRight", 12)}</button>
     <button class="icon-btn sm" data-draft-del="${p.id}" title="删除草稿">${icon("trash", 13)}</button>
@@ -111,7 +116,7 @@ export const draftsView = {
       $$("[data-draft-del]", root).forEach(b => b.addEventListener("click", async e => {
         e.stopPropagation();
         const p = productionById(b.dataset.draftDel); if (!p) return;
-        const ok = await confirmModal({ title: `删除草稿「${p.artifacts.copy.title || p.title || p.topic || "未命名"}」？`, body: "该任务的脚本 / 分镜等中间产物会被移除（已发布资产不受影响）。", danger: true, okText: "删除" });
+        const ok = await confirmModal({ title: `删除草稿「${p.artifacts?.copy?.title || p.title || p.topic || "未命名"}」？`, body: "该任务的脚本 / 分镜等中间产物会被移除（已发布资产不受影响）。", danger: true, okText: "删除" });
         if (ok) {
           try {
             const row = b.closest("[data-draft]");

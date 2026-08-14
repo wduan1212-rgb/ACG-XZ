@@ -16,7 +16,8 @@
 - 接流后只读观察到两位真实同学的三个图文任务分别 `2/2`、`2/2`、`7/7` 完成；最后一批从 `5/7` 继续推进到交付，失败、旧恢复错误和 error-level journal 均为 0。公网四入口 20 轮共 `80/80`，11 个首屏资源与发布包逐字节一致。
 - fresh SQLite 备份、逐字节 restore drill 和代码/路由/私密环境回滚集均已验签。切流后 readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，逐表与六类媒体无减少，总行数 `82,847→83,100`，新服务 `NRestarts=0`。
 - v143.2 已包含过期 `planDate` 修复和按回传日期区间导出 Excel；v143.3 累计包含这些能力，没有新增 schema、依赖或持久目录，也没有恢复用量配额门禁。
-- 性能事实仍是画布和图文共享 `IMAGE_SUBMIT_CONCURRENCY=2`，服务器 CPU 空闲，慢主要来自两路槽位排队和供应商长尾。下次优先做批量图文专属 owner-scoped durable job/worker、统一服务端 job/receipt 契约、异步用量投影和持久公平调度，不再用页面保护状态或用量账本阻断创作。
+- v143.5 本地候选 release/cache `20260815-v1435-ai-topic-partial-1`：AI 选题部分成功按账号保留到批次 session，可先填入已生成空白行，刷新后恢复，补生成只提交缺失账号并保护手工内容。最终全量主服务 `857`、sidecar `160`、Node `133`，真实 AI 选题 `8/8 + 5/5`，最终三用户批量图文 `3/3`+无限画布 `3/3`。当前仍未推送、未部署，生产仍为 v143.3。
+- v143.3 生产仍以 `IMAGE_SUBMIT_CONCURRENCY=2` 运行；image-2 账号总并发虽为 `10`，但同一密钥还被另一个产品使用。v143.4 本地候选已把批量图文做成 owner-scoped durable job/worker，并采用“最大 10、初始 6、繁忙收缩、持续成功缓慢恢复”的 owner/surface 自适应公平队列；HTTP 200 JSON 内的 `code:1002` 业务繁忙也会形成独立失败 receipt 后安全重试，不再直接变成用户任务失败。修复后真实三用户批量图文 `21/21`、无限画布 `12/12`，双异形参考图全部使用、unknown 为 0；资产页也已容忍部分 production。部署时 release 外私密环境应显式设置 `IMAGE_SUBMIT_CONCURRENCY=10` 与 `IMAGE_SUBMIT_INITIAL_CONCURRENCY=6`。当前仍未推送、未部署。
 - `/data` 约 99% 使用，旧 restore drills 是已识别的大型清理候选；它们属于恢复证据，未获明确批准不得删除。
 
 ## 1. 项目固定信息

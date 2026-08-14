@@ -4,24 +4,28 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260814-v1434-durable-batch-jobs-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260815-v1435-ai-topic-partial-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260814-v1434-durable-batch-jobs-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260814-v1434-durable-batch-jobs-1";
+} from "./orchestrator.js?v=20260815-v1435-ai-topic-partial-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260815-v1435-ai-topic-partial-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260814-v1434-durable-batch-jobs-1";
-import { deliver } from "../domain/delivery.js?v=20260814-v1434-durable-batch-jobs-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260815-v1435-ai-topic-partial-1";
+import { deliver } from "../domain/delivery.js?v=20260815-v1435-ai-topic-partial-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260814-v1434-durable-batch-jobs-1";
+import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260815-v1435-ai-topic-partial-1";
 import { qianfanTopicIdeas } from "../core/remote.js";
-import { validatePublishText } from "../domain/publishRules.js?v=20260814-v1434-durable-batch-jobs-1";
+import { validatePublishText } from "../domain/publishRules.js?v=20260815-v1435-ai-topic-partial-1";
+import {
+  normalizeAiTopicDraft, mergeAiTopicDraft, aiTopicAccountIdsToGenerate,
+  fillBlankAiTopicContent, pruneAiTopicDraft
+} from "../domain/aiTopicDraft.js?v=20260815-v1435-ai-topic-partial-1";
 
 let mounted = false;
 let rootEl = null;
@@ -634,7 +638,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260814-v1434-durable-batch-jobs-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260815-v1435-ai-topic-partial-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -851,6 +855,9 @@ function wire(root) {
         ["accountCopyTitles", "accountCopyBodies", "accountRefAssetIds", "accountImageCounts", "accountImageCreationModes", "accountImagePrompts", "accountSingleImageTitles", "accountCounts", "accountContents", "accountProductIds", "accountCustomCopyModes"].forEach(key => {
           if (m.payload[key]) delete m.payload[key][accountId];
         });
+        const topicDraft = pruneAiTopicDraft(m.payload.aiTopicDraft, m.payload.accountIds);
+        if (topicDraft) m.payload.aiTopicDraft = topicDraft;
+        else delete m.payload.aiTopicDraft;
         prunePlanReferences(m.payload);
         save("sessions");
         rerenderPlanCard(m.id);
@@ -1479,9 +1486,14 @@ function openAiTopicPicker(mid) {
     toast("请先选择要填写的账号");
     return;
   }
-  const initialQuery = String(m.payload.content || m.payload.topic || "").trim();
-  let preview = null;
-  openModal(`<div class="mp-head"><div><b>百度搜索 AI 选题</b><em>搜索事实来源，预览后只填所选账号的空白标题和文案</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+  const selectedAccountIds = accounts.map(account => String(account.id));
+  const initialQuery = String(
+    m.payload.aiTopicDraft?.query || m.payload.content || m.payload.topic || "",
+  ).trim();
+  let preview = m.payload.aiTopicDraft
+    ? normalizeAiTopicDraft(m.payload.aiTopicDraft, selectedAccountIds)
+    : null;
+  openModal(`<div class="mp-head"><div><b>百度搜索 AI 选题</b><em>逐账号保存生成结果，失败时可先填成功项并只补生成缺失项</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
     <div class="mp-body agc-ai-topic-modal">
       <div class="agc-ai-topic-query">
         <label><span>选题方向</span><input class="input" id="agcAiTopicQuery" maxlength="300" value="${esc(initialQuery)}" placeholder="例如：AI 视频生成行业最新动态" /></label>
@@ -1491,7 +1503,7 @@ function openAiTopicPicker(mid) {
         </div>
         <button class="btn primary" id="agcAiTopicGenerate" type="button">${icon("search", 14)} 搜索并生成预览</button>
       </div>
-      <div class="agc-ai-topic-note">已选择 ${accounts.length} 个账号。生成内容会遵守小红书标题 20 字/正文 1000 字，以及视频号标题 16 字且无标点的规则。</div>
+      <div class="agc-ai-topic-note">已选择 ${accounts.length} 个账号。每个账号生成成功后立即保留；填入时只补空白标题和文案，不覆盖人工内容。</div>
       <div class="agc-ai-topic-preview" id="agcAiTopicPreview"><p>输入方向后生成预览；这里不会直接覆盖任务板已有内容。</p></div>
     </div>
     <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="agcAiTopicApply" disabled>填入空白行</button></div>`, {
@@ -1502,18 +1514,48 @@ function openAiTopicPicker(mid) {
       const generateButton = $("#agcAiTopicGenerate", panel);
       const applyButton = $("#agcAiTopicApply", panel);
       const previewNode = $("#agcAiTopicPreview", panel);
-      let recency = "week";
-      const sourceMap = () => new Map((preview?.references || []).map(item => [Number(item.id), item]));
-      const renderPreview = () => {
-        if (!previewNode || !preview) return;
-        const references = sourceMap();
+      let recency = preview?.recency === "month" ? "month" : "week";
+      let requestError = "";
+      const itemIsValid = item => validatePublishText({
+        platform: item?.platform,
+        title: item?.title,
+        copy: item?.copy,
+      }).ok;
+      const renderPreview = ({ loading = false } = {}) => {
+        if (!previewNode) return;
+        if (!preview) {
+          previewNode.innerHTML = loading
+            ? `<p class="is-loading">正在读取百度搜索结果并逐账号保存候选内容…</p>`
+            : requestError
+              ? `<p class="is-error">${esc(requestError)}</p>`
+              : `<p>输入方向后生成预览；这里不会直接覆盖任务板已有内容。</p>`;
+          applyButton.disabled = true;
+          applyButton.textContent = "填入空白行";
+          generateButton.innerHTML = loading
+            ? `${icon("loader", 14)} 正在搜索并生成…`
+            : `${icon("search", 14)} 搜索并生成预览`;
+          return;
+        }
         const items = preview.items || [];
-        const previewAccountIds = new Set(items.map(item => String(item.accountId || "")));
-        const missingAccounts = accounts.filter(account => !previewAccountIds.has(String(account.id)));
-        const invalidItems = items.filter(item => !validatePublishText({ platform: item.platform, title: item.title, copy: item.copy }).ok);
-        previewNode.innerHTML = items.map(item => {
+        const validItems = items.filter(itemIsValid);
+        const validAccountIds = new Set(validItems.map(item => String(item.accountId || "")));
+        const missingAccounts = accounts.filter(account => !validAccountIds.has(String(account.id)));
+        const errorMap = new Map((preview.errors || []).map(item => [String(item.accountId || ""), item.message]));
+        const status = [];
+        if (loading) status.push(`<p class="is-loading">正在生成 ${missingAccounts.length || accounts.length} 个账号；已生成内容会继续保留。</p>`);
+        if (requestError) status.push(`<p class="is-error">${esc(requestError)}；已生成内容仍可先填入。</p>`);
+        if (missingAccounts.length) {
+          const details = missingAccounts.slice(0, 4).map(account => {
+            const message = errorMap.get(String(account.id));
+            return `${accountDisplayName(account)}${message ? `（${message}）` : ""}`;
+          }).join("、");
+          status.push(`<p class="is-error">已保留 ${validItems.length} 个账号，还有 ${missingAccounts.length} 个待补生成：${esc(details)}${missingAccounts.length > 4 ? "等" : ""}。</p>`);
+        } else if (validItems.length) {
+          status.push(`<p class="is-success">${validItems.length} 个账号均已生成并保存。</p>`);
+        }
+        previewNode.innerHTML = status.join("") + (items.map(item => {
           const validation = validatePublishText({ platform: item.platform, title: item.title, copy: item.copy });
-          const sources = (item.sourceIds || []).map(id => references.get(Number(id))).filter(Boolean);
+          const sources = Array.isArray(item.sources) ? item.sources.filter(Boolean) : [];
           return `<article class="agc-ai-topic-item ${validation.ok ? "" : "is-invalid"}">
             <header><span><b>${esc(item.accountName || "账号")}</b><em>${esc(item.platform || "平台")}</em></span><small>${validation.titleLength}/${item.platform === "视频号" ? 16 : 20} 字</small></header>
             <h4>${esc(item.title || "")}</h4>
@@ -1521,17 +1563,24 @@ function openAiTopicPicker(mid) {
             ${validation.ok ? "" : `<strong>${esc(validation.message)}</strong>`}
             ${sources.length ? `<footer>${sources.map(source => `<a href="${esc(source.url || "#")}" target="_blank" rel="noopener noreferrer">${esc(source.title || "来源")}</a>`).join("")}</footer>` : ""}
           </article>`;
-        }).join("") || `<p>本次没有生成可填入的账号内容，请换一个选题方向。</p>`;
-        if (missingAccounts.length) {
-          previewNode.insertAdjacentHTML("afterbegin", `<p class="is-error">还有 ${missingAccounts.length} 个账号未生成：${esc(missingAccounts.slice(0, 4).map(accountDisplayName).join("、"))}${missingAccounts.length > 4 ? "等" : ""}。请重新生成预览，系统不会只填部分账号。</p>`);
-        }
-        applyButton.disabled = !items.length || missingAccounts.length > 0 || invalidItems.length > 0;
-        applyButton.textContent = missingAccounts.length ? `等待补齐 ${missingAccounts.length} 个账号` : `填入 ${items.length} 个账号的空白行`;
+        }).join("") || `<p>本次没有生成可填入的账号内容，可以补生成待处理账号。</p>`);
+        applyButton.disabled = validItems.length === 0;
+        applyButton.textContent = missingAccounts.length
+          ? `先填入已生成的 ${validItems.length} 个账号`
+          : `填入 ${validItems.length} 个账号的空白行`;
+        generateButton.innerHTML = loading
+          ? `${icon("loader", 14)} 正在搜索并生成…`
+          : missingAccounts.length
+            ? `${icon("search", 14)} 补生成缺失 ${missingAccounts.length} 个账号`
+            : `${icon("search", 14)} 重新生成全部`;
       };
       panel.querySelectorAll("[data-ai-recency]").forEach(button => button.addEventListener("click", () => {
         recency = button.dataset.aiRecency === "month" ? "month" : "week";
         panel.querySelectorAll("[data-ai-recency]").forEach(item => item.classList.toggle("is-active", item === button));
       }));
+      panel.querySelectorAll("[data-ai-recency]").forEach(button => {
+        button.classList.toggle("is-active", button.dataset.aiRecency === recency);
+      });
       generateButton?.addEventListener("click", async () => {
         const query = String(queryInput?.value || "").trim();
         if (query.length < 2) {
@@ -1539,12 +1588,19 @@ function openAiTopicPicker(mid) {
           queryInput?.focus();
           return;
         }
+        const requestedAccountIds = aiTopicAccountIdsToGenerate(
+          preview,
+          selectedAccountIds,
+          query,
+          itemIsValid,
+        );
         generateButton.disabled = true;
-        applyButton.disabled = true;
+        requestError = "";
         generateButton.innerHTML = `${icon("loader", 14)} 正在搜索并生成…`;
-        previewNode.innerHTML = `<p class="is-loading">正在读取百度搜索结果，并为全部所选账号生成候选内容…</p>`;
+        renderPreview({ loading: true });
         try {
-          const payloadAccounts = accounts.map(account => {
+          const requestedSet = new Set(requestedAccountIds);
+          const payloadAccounts = accounts.filter(account => requestedSet.has(String(account.id))).map(account => {
             const productId = (m.payload.accountProductIds || {})[account.id] || m.payload.productId || "";
             const product = state.products.find(item => item.id === productId);
             return {
@@ -1555,51 +1611,35 @@ function openAiTopicPicker(mid) {
             };
           });
           const requestId = `batch-topic-${mid}-${Date.now().toString(36)}`;
-          preview = await qianfanTopicIdeas({ query, recency, accounts: payloadAccounts }, requestId);
+          const incoming = await qianfanTopicIdeas({ query, recency, accounts: payloadAccounts }, requestId);
+          preview = mergeAiTopicDraft(preview, incoming, selectedAccountIds, query, recency);
+          m.payload.aiTopicDraft = preview;
+          save("sessions");
           renderPreview();
         } catch (error) {
-          preview = null;
-          previewNode.innerHTML = `<p class="is-error">${esc(error?.message || "AI 选题生成失败，请稍后重试")}</p>`;
+          requestError = error?.message || "AI 选题生成失败，请稍后重试";
+          renderPreview();
           toast(error?.message || "AI 选题生成失败", "error");
         } finally {
           generateButton.disabled = false;
-          generateButton.innerHTML = `${icon("search", 14)} 重新生成预览`;
+          renderPreview();
         }
       });
       applyButton?.addEventListener("click", () => {
         if (!preview) return;
-        m.payload.accountCopyTitles = m.payload.accountCopyTitles || {};
-        m.payload.accountCopyBodies = m.payload.accountCopyBodies || {};
-        m.payload.accountSingleImageTitles = m.payload.accountSingleImageTitles || {};
-        m.payload.accountCustomCopyModes = m.payload.accountCustomCopyModes || {};
-        let filled = 0;
-        (preview.items || []).forEach(item => {
-          const validation = validatePublishText({ platform: item.platform, title: item.title, copy: item.copy });
-          if (!validation.ok || !(m.payload.accountIds || []).includes(item.accountId)) return;
-          let changed = false;
-          if (!String(m.payload.accountCopyTitles[item.accountId] || "").trim()) {
-            m.payload.accountCopyTitles[item.accountId] = item.title;
-            changed = true;
-          }
-          if (!String(m.payload.accountCopyBodies[item.accountId] || "").trim()) {
-            m.payload.accountCopyBodies[item.accountId] = item.copy;
-            changed = true;
-          }
-          if ((m.payload.accountImageCreationModes || {})[item.accountId] === "single"
-            && !String(m.payload.accountSingleImageTitles[item.accountId] || "").trim()) {
-            m.payload.accountSingleImageTitles[item.accountId] = item.title;
-            changed = true;
-          }
-          if (changed) {
-            m.payload.accountCustomCopyModes[item.accountId] = true;
-            filled += 1;
-          }
-        });
+        const filled = fillBlankAiTopicContent(
+          m.payload,
+          preview.items || [],
+          selectedAccountIds,
+          itemIsValid,
+        );
+        m.payload.aiTopicDraft = normalizeAiTopicDraft(preview, selectedAccountIds);
         save("sessions");
         close();
         rerenderPlanCard(mid);
         toast(filled ? `已填入 ${filled} 个账号的空白内容` : "已有内容均已保留，没有覆盖任何一行");
       });
+      renderPreview();
       requestAnimationFrame(() => queryInput?.focus());
     }
   });

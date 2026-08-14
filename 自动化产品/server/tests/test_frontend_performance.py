@@ -240,6 +240,14 @@ class FrontendPerformanceTest(unittest.TestCase):
         self.assertIn('decoding="async"', self.drafts)
         self.assertIn('fetchpriority="low"', self.drafts)
 
+    def test_drafts_tolerate_partial_artifacts_from_background_jobs(self):
+        self.assertIn("const artifacts = p?.artifacts || {};", self.drafts)
+        self.assertIn("artifacts.images?.items", self.drafts)
+        self.assertIn("artifacts.boards?.items", self.drafts)
+        self.assertIn("artifacts.copy?.title", self.drafts)
+        self.assertIn("p.artifacts?.copy?.title", self.drafts)
+        self.assertIn('p.stage || "待处理"', self.drafts)
+
     def test_custom_tools_mount_only_when_activated(self):
         activate = self.custom.split("const activate = (nextPage, nextResourceId = null) =>", 1)[1].split(
             "root.querySelector(\"[data-custom-back]\")", 1

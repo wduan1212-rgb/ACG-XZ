@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260814-v1434-durable-batch-jobs-1";
-import { setStage, shotsToText } from "../domain/productions.js?v=20260814-v1434-durable-batch-jobs-1";
+import { AI } from "../api/ai.js?v=20260815-v1435-ai-topic-partial-1";
+import { setStage, shotsToText } from "../domain/productions.js?v=20260815-v1435-ai-topic-partial-1";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260814-v1434-durable-batch-jobs-1";
-import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260814-v1434-durable-batch-jobs-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260815-v1435-ai-topic-partial-1";
+import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260815-v1435-ai-topic-partial-1";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260814-v1434-durable-batch-jobs-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260815-v1435-ai-topic-partial-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -995,7 +995,7 @@ export function renderSlotsPage(root, p, isImg) {
     it.referenceReceipt = null;
     save("productions");
     const complete = (A.items || []).every(x => x.assetId);
-    if (complete && ["failed", "pending"].includes(p.stageStatus)) maybeAdvanceAfterInput(p);
+    if (complete) maybeAdvanceAfterInput(p);
     toast(`${isImg ? "已上传并完成发布前精修" : "已上传"} ${i + 1}/${A.items.length}${complete ? " ✓ 全部就位" : ""}`);
   }
 
@@ -1018,6 +1018,7 @@ export function renderSlotsPage(root, p, isImg) {
     fresh.status = "loading";
     fresh.error = "";
     fresh.referenceReceipt = null;
+    let generatedAssetCommitted = false;
     if (redraw && canRedrawCurrent()) draw();
     try {
       const provider = activeProviderFor("image");
@@ -1065,6 +1066,7 @@ export function renderSlotsPage(root, p, isImg) {
           await removeAsset(a.id);
           return;
         }
+        generatedAssetCommitted = true;
         if (!silent) toast(`第 ${i + 1} 张已生成并精修入库`);
       }
     } catch (e) {
@@ -1075,6 +1077,8 @@ export function renderSlotsPage(root, p, isImg) {
       toast("图片生成失败：" + fresh.error, "error");
     }
     save("productions");
+    const complete = isImg && (A.items || []).length > 0 && (A.items || []).every(item => item?.assetId);
+    if (generatedAssetCommitted && complete) maybeAdvanceAfterInput(p);
     if (redraw && canRedrawCurrent()) draw();
   }
 

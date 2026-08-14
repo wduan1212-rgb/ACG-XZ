@@ -3,20 +3,20 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, cacheCanonicalDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260814-v1434-durable-batch-jobs-1";
+import { AI } from "../api/ai.js?v=20260815-v1435-ai-topic-partial-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260814-v1434-durable-batch-jobs-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260814-v1434-durable-batch-jobs-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260815-v1435-ai-topic-partial-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260815-v1435-ai-topic-partial-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260814-v1434-durable-batch-jobs-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260815-v1435-ai-topic-partial-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { registerBatchImageJobs, waitForBatchImageJob } from "../api/batchImageJobs.js?v=20260814-v1434-durable-batch-jobs-1";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260814-v1434-durable-batch-jobs-1";
+import { registerBatchImageJobs, waitForBatchImageJob } from "../api/batchImageJobs.js?v=20260815-v1435-ai-topic-partial-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260815-v1435-ai-topic-partial-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -2150,6 +2150,30 @@ async function applyBatchImageJobResult(p, item, job) {
   item.error = status === "failed" ? String(job?.error || "图片生成失败") : "";
 }
 
+async function persistBatchImageSettlement(p, generated) {
+  if (generated?.complete !== true) {
+    p.stage = "images";
+    p.stageStatus = "pending";
+    p.error = null;
+    p.artifacts.images.recovery = {
+      status: generated?.confirmingIndexes?.length ? "result-confirming" : "missing-images",
+      imageIndexes: generated?.confirmingIndexes || [],
+      failedIndexes: generated?.failedIndexes || [],
+      pendingIndexes: generated?.pendingIndexes || [],
+      updatedAt: Date.now(),
+    };
+    if (generated?.deferred) await cacheCanonicalDocuments("productions", p);
+    else await persistBatchProductionCheckpoint(p);
+    return false;
+  }
+  clearCompletedBatchImageErrors(p);
+  setStage(p, "review", "pending");
+  // Batch execution, retry, drawer refinement and single-account refinement
+  // all converge on this durable completion checkpoint.
+  await persistBatchProductionCheckpoint(p);
+  return generated;
+}
+
 async function generateBatchImagesInHouse(p, batch, acc) {
   await imageProviderReadyForSubmit();
   const A = p.artifacts.images;
@@ -2264,7 +2288,9 @@ export async function regenerateBatchImage(p, imageIndex) {
   item.operationKey = `batch-image-${String(p.id)}-${Number(imageIndex) + 1}-revision-${item.generationRevision}`;
   item.generationJobId = "";
   await persistBatchProductionCheckpoint(p);
-  await generateBatchImagesInHouse(p, batch, acc);
+  const generated = await generateBatchImagesInHouse(p, batch, acc);
+  await persistBatchImageSettlement(p, generated);
+  evaluate(batch.id);
   return item;
 }
 
@@ -2279,31 +2305,7 @@ async function runBatchImagesToReview(p, batch) {
   try {
     setBatchPhase(batch, "generating");
     const generated = await generateBatchImagesInHouse(p, batch, acc);
-    if (generated?.complete === false) {
-      p.stage = "images";
-      p.stageStatus = "pending";
-      p.error = null;
-      p.artifacts.images.recovery = {
-        status: generated.confirmingIndexes?.length ? "result-confirming" : "missing-images",
-        imageIndexes: generated.confirmingIndexes || [],
-        failedIndexes: generated.failedIndexes || [],
-        pendingIndexes: generated.pendingIndexes || [],
-        updatedAt: Date.now(),
-      };
-      if (generated?.deferred) {
-        await cacheCanonicalDocuments("productions", p);
-      } else {
-        await persistBatchProductionCheckpoint(p);
-      }
-      return false;
-    }
-    clearCompletedBatchImageErrors(p);
-    setStage(p, "review", "pending");
-    // “全部图片已完成”与逐张结果一样属于刷新恢复的权威检查点。
-    // 只依赖 setStage() 的延迟整集合 save，刷新或旧标签页竞争时仍可能
-    // 把 4/4 的任务留在 images/running，外层批次就会永久显示生成中。
-    await persistBatchProductionCheckpoint(p);
-    return generated;
+    return await persistBatchImageSettlement(p, generated);
   } catch (e) {
     if (generationDeferred(e)) {
       p.stageStatus = "pending";

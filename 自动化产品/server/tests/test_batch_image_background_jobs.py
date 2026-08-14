@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -54,7 +55,7 @@ class BatchImageBackgroundJobsTest(unittest.TestCase):
         self.temp.cleanup()
 
     def jobs(self):
-        jobs = [{
+        return [{
             "clientJobId": f"batch-image-production-a-{index + 1}",
             "productionId": "production-a",
             "accountId": "account-a",
@@ -65,12 +66,11 @@ class BatchImageBackgroundJobsTest(unittest.TestCase):
             "ratio": "3:4",
             "assetName": f"结果 {index + 1}",
         } for index in range(3)]
-        for job in jobs:
-            job["requestFingerprint"] = store._canonical_json_sha256(job)
-        return jobs
 
     def test_batch_registration_is_atomic_idempotent_and_owner_scoped(self):
-        first = store.create_batch_image_generation_jobs(self.owner_id, self.jobs())
+        initial = self.jobs()
+        initial[0]["requestFingerprint"] = "browser-value-is-not-authoritative"
+        first = store.create_batch_image_generation_jobs(self.owner_id, initial)
         self.assertEqual(3, len(first))
         self.assertTrue(all(created for _job, created in first))
         replay = store.create_batch_image_generation_jobs(self.owner_id, self.jobs())
@@ -78,10 +78,6 @@ class BatchImageBackgroundJobsTest(unittest.TestCase):
 
         conflicting = self.jobs()
         conflicting[1]["prompt"] = "不同的图片请求"
-        conflicting[1]["requestFingerprint"] = store._canonical_json_sha256({
-            key: value for key, value in conflicting[1].items()
-            if key != "requestFingerprint"
-        })
         with self.assertRaisesRegex(ValueError, "batch_image_generation_job_conflict"):
             store.create_batch_image_generation_jobs(self.owner_id, conflicting)
 
@@ -189,6 +185,97 @@ class FairImageSubmitQueueTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(first, *pending)
         self.assertEqual(["a1", "a2", "b1", "a3"], order)
         self.assertEqual(0, queue.active)
+
+    async def test_account_busy_feedback_surrenders_and_gradually_recovers_lanes(self):
+        queue = main._FairImageSubmitQueue(10, 6)
+        self.assertEqual(6, queue.limit)
+        for _index in range(3):
+            queue.note_busy()
+        self.assertEqual(3, queue.limit)
+        self.assertEqual(10, queue.max_limit)
+
+        queue.note_success()
+        queue.note_success()
+        self.assertEqual(3, queue.limit)
+        queue.note_success()
+        self.assertEqual(4, queue.limit)
+        self.assertEqual(0, queue.success_credit)
+
+    async def test_image_two_capacity_is_ten_and_late_surface_is_not_starved(self):
+        class DummyResponse:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def json(self):
+                return {"ok": True}
+
+        class DummyLedger:
+            def __init__(self, member_id, surface):
+                self.member = {"id": member_id}
+                self.surface = surface
+
+            async def acquire(self):
+                return None
+
+        class DummyClient:
+            def __init__(self):
+                self.active = 0
+                self.peak = 0
+                self.started = []
+
+            async def post(self, _endpoint, *, json, headers):
+                del headers
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                self.started.append(json["name"])
+                await asyncio.sleep(0.03)
+                self.active -= 1
+                return DummyResponse()
+
+        async def submit(client, name, member_id, surface):
+            _response, data = await main._post_json_with_retry(
+                client,
+                "https://image.example/generate",
+                {"name": name},
+                {},
+                retries=0,
+                attempt_ledger=DummyLedger(member_id, surface),
+            )
+            return data
+
+        client = DummyClient()
+        fresh_queues = weakref.WeakKeyDictionary()
+        with patch.object(main, "IMAGE_SUBMIT_CONCURRENCY", 10), patch.object(
+            main, "_IMAGE_SUBMIT_QUEUES", fresh_queues,
+        ):
+            bulk = [
+                asyncio.create_task(submit(
+                    client, f"batch-{index}", "member-a", "batch-image",
+                ))
+                for index in range(40)
+            ]
+            await asyncio.sleep(0.005)
+            later = [
+                asyncio.create_task(submit(
+                    client, f"canvas-{index}", "member-b", "custom-canvas",
+                ))
+                for index in range(10)
+            ]
+            results = await asyncio.gather(*bulk, *later)
+            queue = fresh_queues.get(asyncio.get_running_loop())
+
+        self.assertEqual(50, len(results))
+        self.assertTrue(all(result == {"ok": True} for result in results))
+        self.assertEqual(10, client.peak)
+        self.assertEqual(0, client.active)
+        self.assertIsNotNone(queue)
+        self.assertEqual(0, queue.active)
+        first_canvas = next(
+            index for index, name in enumerate(client.started)
+            if name.startswith("canvas-")
+        )
+        self.assertLessEqual(first_canvas, 11)
 
 
 if __name__ == "__main__":

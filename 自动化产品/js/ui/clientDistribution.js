@@ -3,7 +3,7 @@
 
 import { esc } from "../core/util.js";
 import { icon } from "./icons.js";
-import { openModal } from "./components.js?v=20260814-v1434-durable-batch-jobs-1";
+import { openModal } from "./components.js?v=20260815-v1435-ai-topic-partial-1";
 
 const MANIFEST_URL = "/downloads/client/manifest.json";
 const SAFE_DOWNLOAD_PREFIX = "/downloads/client/";
