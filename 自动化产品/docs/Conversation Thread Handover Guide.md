@@ -8,16 +8,16 @@
 
 ## 0. 2026-08-14 当前交接快照
 
-- 当前生产仍是 v143.2；本地隔离工作树 `/private/tmp/acg-v1433-batch-partial-recovery` 上形成 v143.3 候选，分支 `codex/v1433-batch-partial-recovery`，release/cache `20260814-v1433-batch-partial-recovery-1`。候选尚未接流，不得把本地测试写成生产已修复。
+- 当前生产为 v143.3，功能提交 `644c5a4c914d2c0feced5e0701c0c52a06f5d05a`，隔离工作树 `/private/tmp/acg-v1433-batch-partial-recovery`，分支 `codex/v1433-batch-partial-recovery`，release/cache `20260814-v1433-batch-partial-recovery-1`，sibling release `20260814-v1433-batch-partial-recovery-1-644c5a4c`。main/sidecar 私有端口为 `8801/8776`；v143.2 main/sidecar/routing 仍 active/RW，是直接在线代码回滚点。
 - v143.3 把批量图文从“整组 shots JSON + 一张抛错中断账号”切成单图卡提示词、单图 operation/asset 和 production settlement。单卡 LLM 异常只用已确认文案安全组装；单图失败/unknown 不再阻止后续图和其他账号，用户明确重试只补缺失项。已完成/已交付会清理旧错误。
-- 无限画布原子整批和顺序执行未改；只修复极端长条参考图在传输归一化时可能先被放大为超大中间画布的内存风险。图片最长边限 `4096`，保留原图不裁剪。
-- 候选证据：锁定主服务 `841/841`、sidecar `160/160`、Node `129/129`；批量+画布复杂专项五轮共 `805` 次无失败；画布 typecheck/lint/build 全绿；Phase 0 `a6d7567cbb260c024136bed5e00799011e494307d85163d10e0d4403e8ab4dfb`。
-- 当前生产为 v143.2，release/cache `20260813-v1432-publish-export-1`，部署提交 `aa80a16b65564208021c84618cf3b9bf6054c2a9`；新 main/sidecar 运行在私有端口 `8800/8775`，v143.1 仍 active/RW 作为在线代码回滚。当前 protected readiness 全绿，SQLite `quick_check=ok / 48 tables`，新服务 `NRestarts=0`。
-- 本版修复无限画布/视频工坊定制发布沿用过期 `planDate` 导致错误日期额度拒绝；创作端和供应商端的发布清单已共用按回传日期区间导出 Excel 能力。架构变化仅是发布日期领域和纯导出领域的切割，没有新 schema、依赖、持久目录或生成门禁。
-- 标准真实验收为无限画布 `10/10`、批量图文 `6/6`、看图写文案 `2/2`；生产浏览器实际打开画布产物、批量工作台和导出弹窗，`161` 条回传明细的 XLSX 再导入通过。
-- 复杂并发验收覆盖三用户、六个画布批次、三个图文组和超宽/超高/透明小图：画布 `18/18` 成功且无“后台任务不存在”，跨用户读取均拒绝；图文已提交 `8` 张中 `7` 张成功，一张 provider `ReadTimeout` 保留为 `IMAGE_PROVIDER_RESULT_UNKNOWN`，未重试。因此不得将极压批量图文写成全绿。
-- 性能事实：画布和图文共享 `IMAGE_SUBMIT_CONCURRENCY=2`，成功耗时近期 P50 约 `62.3s`、P90 约 `90.4s`，服务器 CPU 空闲，慢主要来自两路槽位排队和供应商长尾。下次优化顺序是可查的供应商异步回执、owner-scoped 持久公平队列、queue/provider 分段耗时和 ETA；未确认合同容量前不盲目提并发。
-- `/data` 已约 99% 使用，已识别的大项是旧 restore drills；它们属于恢复证据，未获明确批准不得删除。
+- 无限画布原子整批和顺序执行未改；极端长条参考图的最长边限为 `4096`，先等比缩放再补到上游 `3:1` 边界，保留原图不裁剪且不再制造超大中间画布。
+- 本地与目标 Linux：主服务 `841 tests / OK / 1 approved skip`、sidecar `160/160`、Node `129/129`；批量+画布复杂专项五轮共 `805/805`；画布 typecheck/lint/build 全绿；Phase 0 `a6d7567cbb260c024136bed5e00799011e494307d85163d10e0d4403e8ab4dfb`。
+- 无流量真实验收为双用户异形图画布 `12/12`、耐久轮询 `492` 次无 job 丢失、四组图文 `12/12`、看图写文案 `2/2`、单卡提示词 `8/8`（一次 LLM 503 只回退当前卡）以及双用户 AI 选题 `8/8`。所有验收均单次提交，未知结果未自动重提。
+- 接流后只读观察到两位真实同学的三个图文任务分别 `2/2`、`2/2`、`7/7` 完成；最后一批从 `5/7` 继续推进到交付，失败、旧恢复错误和 error-level journal 均为 0。公网四入口 20 轮共 `80/80`，11 个首屏资源与发布包逐字节一致。
+- fresh SQLite 备份、逐字节 restore drill 和代码/路由/私密环境回滚集均已验签。切流后 readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，逐表与六类媒体无减少，总行数 `82,847→83,100`，新服务 `NRestarts=0`。
+- v143.2 已包含过期 `planDate` 修复和按回传日期区间导出 Excel；v143.3 累计包含这些能力，没有新增 schema、依赖或持久目录，也没有恢复用量配额门禁。
+- 性能事实仍是画布和图文共享 `IMAGE_SUBMIT_CONCURRENCY=2`，服务器 CPU 空闲，慢主要来自两路槽位排队和供应商长尾。下次优先做批量图文专属 owner-scoped durable job/worker、统一服务端 job/receipt 契约、异步用量投影和持久公平调度，不再用页面保护状态或用量账本阻断创作。
+- `/data` 约 99% 使用，旧 restore drills 是已识别的大型清理候选；它们属于恢复证据，未获明确批准不得删除。
 
 ## 1. 项目固定信息
 

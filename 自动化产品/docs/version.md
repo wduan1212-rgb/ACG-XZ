@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v143.3 - 2026-08-14（本地候选：批量图文单卡解耦与部分结果收敛）
+## v143.3 - 2026-08-14（生产：批量图文单卡解耦与部分结果收敛）
+
+### 生产部署闭环
+
+- 生产流量运行功能提交 `644c5a4c914d2c0feced5e0701c0c52a06f5d05a`，分支 `codex/v1433-batch-partial-recovery`，release/cache `20260814-v1433-batch-partial-recovery-1`，实际 sibling release `20260814-v1433-batch-partial-recovery-1-644c5a4c`。新 main/sidecar 运行在私有端口 `8801/8776`；v143.2 main/sidecar/routing 保持 active/RW，停止 v143.3 routing 即可回到在线旧代码，不替换新业务数据。
+- 目标 Linux 在正确的源码检出形状下完成主服务 `841 tests / OK / 1 approved skip`、sidecar `160/160`、Node `129/129`，release verifier 与下方哈希完全一致。候选接流前为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，切流后 main/sidecar 均 active/RW、`NRestarts=0`，错误级 journal 为 0。
+- 切流前 SQLite v2 保护点 `/data/dumate-studio/backups/v1433-pre-switch-20260814T032000Z` 的 manifest SHA-256 为 `d9fa554bfaf6454ef6cbe962c3b0663eaa32dc9dc1be7897bac1bc72de33e9ff`、数据库 SHA-256 为 `0c2d2c2b87a1f11245d1972668bc00b7610053f9df1187fc769ea717e182c29e`、逻辑 SHA-256 为 `6af93526acf68a034ca4fae86118ca4f427640930fd363356ce2a0d85ddfbf29`；逐字节一致 restore drill 的 `quick_check=ok / 48 tables`。v143.2 单元、路由和私密环境回滚副本保存在 `/data/dumate-studio/deployment-backups/v1433-pre-switch-20260814T032300Z`。
+- 无流量真实验收只提交一次：双用户异形参考图无限画布 `12/12` 成功，`492` 次耐久轮询无 job 丢失，12 个 Blob 内容哈希均唯一，跨 owner 读取 `2/2` 拒绝；四组批量图文 `12/12` 成功，看图写文案 `2/2`；新单卡提示词 `8/8` 可执行且唯一，其中 `7` 卡由真实 LLM 生成，一次上游 503 只让当前卡走安全回退，未影响其余卡。
+- 百度搜索 AI 选题由两个验收用户并发生成，共 `8/8` 条、每组各 4 个账号，账号 ID 与输入顺序完全一致，8 个标题均唯一且每条都引用本次搜索的有效来源；每组仅一次请求，没有补提。切流后又只读观察到两位真实同学的三个图文任务分别 `2/2`、`2/2`、`7/7` 完成，失败为 0，最后一批从 `5/7` 持续推进到 `7/7`，没有再出现“只出第一张”或旧刷新恢复错误。
+- 公网 root/health/OpenAPI/main.js 连续 20 轮共 `80/80` 成功，首页引用的 11 个静态文件与发布包逐字节一致；冷启动浏览器完整渲染 v143.3，游客进入画布正确落到登录边界。切流后 SQLite 保持 `quick_check=ok / 48 tables`，逐表与六类媒体均无减少，总行数 `82,847→83,100`，uploads `8,010→8,040`、canvas blobs `875→878`，其余媒体文件数保持不减。
 
 ### 本版范围
 
@@ -11,9 +20,9 @@
 
 ### 验证证据与发布边界
 
-- 锁定 Python 3.11 测试环境主服务全量 `841/841` 通过（`1` 项按环境条件跳过）；视频 sidecar `160/160`，主工作台 Node `129/129`。批量+画布专项复杂矩阵连续 `5` 轮，每轮 `161/161`，合计 `805` 次无失败；覆盖多用户并发存储、100 次轮询、10 张画布后台任务、20 次宽幅编辑、真实遮罩、多参考图、单图失败隔离和数据库忙降级。
+- 锁定 Python 3.11 测试环境主服务运行 `841` 项并 `OK`（`1` 项按环境条件跳过）；视频 sidecar `160/160`，主工作台 Node `129/129`。批量+画布专项复杂矩阵连续 `5` 轮，每轮 `161/161`，合计 `805` 次无失败；覆盖多用户并发存储、100 次轮询、10 张画布后台任务、20 次宽幅编辑、真实遮罩、多参考图、单图失败隔离和数据库忙降级。
 - 无限画布源码 `typecheck` / `lint` / `build:embed` 全部通过。release/cache 为 `20260814-v1433-batch-partial-recovery-1`；Phase 0 `a6d7567cbb260c024136bed5e00799011e494307d85163d10e0d4403e8ab4dfb`，ESM closure `8f1d8520f6835cb31d908831357738f01d895f3224bb08007dfabccec262edc9`，canvas manifest 仍为 `e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`，runtime `65 files / 3,336,370 bytes / a06c60d0cff9a1f9a7308e8d1dc405532fe075b0dbd9d9aac225653e0296f5c7`。
-- 本地候选尚未接管生产流量。发布仍必须使用新 sibling main/sidecar、保留 v143.2 active/RW，完成 fresh SQLite 备份/隔离 restore drill、候选无流量 protected readiness 和真实画布+批量并行验收后才可切流。部署只允许验签代码/静态进入新 release，不覆盖 SQLite、账号、媒体、任务、认证、私密环境或 provider 密钥。
+- 上述发布已按新 sibling main/sidecar、保留 v143.2 active/RW、fresh SQLite 备份/隔离 restore drill、候选无流量 protected readiness 和真实画布+批量+AI 选题并发验收执行。部署只让验签代码/静态进入新 release，没有覆盖 SQLite、账号、媒体、任务、认证、私密环境或 provider 密钥。
 
 ## v143.2 - 2026-08-13（生产：发布日期语义切割与回传 Excel）
 
