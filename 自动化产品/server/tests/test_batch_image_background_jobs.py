@@ -102,7 +102,12 @@ class BatchImageBackgroundJobsTest(unittest.TestCase):
             }
 
         async def exercise():
-            with patch.object(main, "_image_generate_impl", side_effect=generated):
+            # The locked regression suite intentionally runs without provider
+            # secrets.  Keep the production configuration guard intact while
+            # replacing both its secret and the paid provider boundary here.
+            with patch.object(main, "IMAGE_API_KEY", "test-image-key"), patch.object(
+                main, "_image_generate_impl", side_effect=generated,
+            ):
                 await asyncio.gather(*[
                     main._run_batch_image_generation_job(
                         self.owner_id, f"batch-image-production-a-{index + 1}",
