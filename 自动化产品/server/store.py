@@ -6824,6 +6824,117 @@ def private_media_registry_status():
         conn.close()
 
 
+def reconcile_video_workshop_media_registry_incremental():
+    """Close only the post-isolation video-output delta during normal runtime.
+
+    Historical raw pending rows are immutable audit evidence.  This recovery
+    uses the same mtime partition as the reviewed settlement path, but performs
+    only ordinary private-media registrations and never creates a settlement
+    receipt, calls a provider, or touches an isolated identity.
+    """
+
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot reconcile video media")
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            plan = _private_media_plan_locked(conn)
+            counts = plan.get("counts") or {}
+            effective_pending = int(counts.get("effectivePendingRows") or 0)
+            if effective_pending == 0:
+                conn.rollback()
+                return {"projects": 0, "files": 0, "reused": True}
+            existing_pairs = {
+                (str(row[0]), str(row[1]), str(row[2]))
+                for row in conn.execute(
+                    "SELECT media_kind,media_key,owner_id "
+                    "FROM private_media_registry"
+                ).fetchall()
+            }
+            recoverable = []
+            for kind, key, owner, team_id, proof_kind, proof_id in plan.get("rows") or []:
+                pair = (str(kind), str(key), str(owner))
+                identity = (str(kind), str(key))
+                if pair in existing_pairs:
+                    continue
+                if _private_media_isolation_row_locked(conn, *identity):
+                    continue
+                if identity[0] == "upload" and identity[1].startswith("member-avatar-"):
+                    continue
+                if not _private_media_reference_available_locked(conn, identity):
+                    continue
+                recoverable.append(
+                    (kind, key, owner, team_id, proof_kind, proof_id)
+                )
+            baseline = conn.execute(
+                "SELECT created_at,raw_pending_rows FROM media_isolation_settlements "
+                "ORDER BY created_at,settlement_id"
+            ).fetchall()
+            selected = list(recoverable)
+            if len(baseline) == 1:
+                cutoff_ms = int(baseline[0][0])
+                historical_rows = int(baseline[0][1])
+                before = []
+                after = []
+                for row in recoverable:
+                    kind, key, _owner, _team_id, proof_kind, _proof_id = row
+                    if kind != "video-output" or proof_kind != "video-workshop-project":
+                        raise StoreNotReadyError(
+                            "video media recovery contains an unsupported identity"
+                        )
+                    try:
+                        mtime_ms = int(
+                            (PRIVATE_MEDIA_VIDEO_OUTPUT_DIR / key).stat().st_mtime_ns
+                            // 1_000_000
+                        )
+                    except OSError as exc:
+                        raise StoreNotReadyError(
+                            "video media recovery file disappeared"
+                        ) from exc
+                    (before if mtime_ms < cutoff_ms else after).append(row)
+                if (
+                    len(before) != historical_rows
+                    or len(after) != effective_pending
+                    or len(recoverable) - effective_pending != historical_rows
+                ):
+                    raise StoreNotReadyError(
+                        "video media recovery effective pending set is not exact"
+                    )
+                selected = after
+            if len(selected) != effective_pending:
+                raise StoreNotReadyError(
+                    "video media recovery effective pending count changed"
+                )
+            now = int(time.time() * 1000)
+            projects = set()
+            for kind, key, owner, team_id, proof_kind, proof_id in selected:
+                _register_private_media_locked(
+                    conn, kind, key, owner, team_id=team_id,
+                    provenance_kind=proof_kind, provenance_id=proof_id, now=now,
+                )
+                projects.add(str(proof_id))
+            verification = _private_media_plan_locked(conn)
+            verification_counts = verification.get("counts") or {}
+            if (
+                int(verification_counts.get("effectivePendingRows") or 0) != 0
+                or int(verification_counts.get("mediaIsolationAuditDrift") or 0) != 0
+            ):
+                raise StoreNotReadyError("video media recovery verification failed")
+            conn.commit()
+            return {
+                "projects": len(projects),
+                "files": len(selected),
+                "reused": False,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def private_media_migration_preflight(
     *,
     expected_identity,
@@ -20439,77 +20550,6 @@ def list_custom_video_project_ids(owner_id):
         and (item.get("projectState") or {}).get("integration") == "video-workshop"
         and (item.get("projectState") or {}).get("workshopProjectId")
     ]
-
-
-def list_video_workshop_media_bindings():
-    """Return the unique server-owned project bindings used for media recovery.
-
-    The sidecar does not own tenant identity.  Recovery therefore starts from
-    the main database's existing custom-project mapping and refuses an
-    ambiguous workshop project instead of guessing an owner from a directory.
-    """
-
-    _ensure_db()
-    with _lock:
-        conn = _connect(read_only=True)
-        try:
-            rows = conn.execute(
-                "SELECT id,owner_id,data FROM docs "
-                "WHERE collection='customProjects' ORDER BY id"
-            ).fetchall()
-            candidates = {}
-            for doc_id, owner_id, encoded in rows:
-                try:
-                    item = json.loads(encoded)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                state = (
-                    item.get("projectState")
-                    if isinstance(item.get("projectState"), dict)
-                    else {}
-                )
-                project_id = str(state.get("workshopProjectId") or "").strip()
-                owner = str(owner_id or "").strip()
-                if (
-                    item.get("kind") != "video"
-                    or state.get("integration") != "video-workshop"
-                    or not project_id
-                    or not owner
-                    or not _resource_scope_allows_actor_locked(
-                        conn, "customProjects", doc_id, owner,
-                    )
-                ):
-                    continue
-                scope = _member_resource_scope_locked(conn, owner)
-                binding = {
-                    "ownerId": owner,
-                    "teamId": (
-                        str(scope[1]) if scope and scope[0] == "team" else ""
-                    ),
-                    "projectId": project_id,
-                }
-                candidates.setdefault(project_id, set()).add(
-                    (binding["ownerId"], binding["teamId"])
-                )
-            conflicts = [
-                project_id
-                for project_id, owners in candidates.items()
-                if len(owners) != 1
-            ]
-            if conflicts:
-                raise StoreNotReadyError(
-                    "video workshop project ownership is ambiguous"
-                )
-            return [
-                {
-                    "projectId": project_id,
-                    "ownerId": next(iter(owners))[0],
-                    "teamId": next(iter(owners))[1],
-                }
-                for project_id, owners in sorted(candidates.items())
-            ]
-        finally:
-            conn.close()
 
 
 def sync_custom_video_project(owner_id, workshop_project):

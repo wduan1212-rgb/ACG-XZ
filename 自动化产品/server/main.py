@@ -13130,38 +13130,9 @@ def _register_video_workshop_media(source, member: dict, project_id: str = ""):
 
 
 def _reconcile_video_workshop_media_registry():
-    """Register every durable output from an unambiguous main-store binding."""
+    """Register only the exact post-isolation durable output delta."""
 
-    projects = 0
-    files = 0
-    for binding in store.list_video_workshop_media_bindings():
-        project_id = str(binding.get("projectId") or "").strip()
-        project_root = _video_workshop_safe_path(
-            VIDEO_WORKSHOP_OUTPUT_DIR, project_id,
-        )
-        entries = set()
-        if project_root.is_dir() and not project_root.is_symlink():
-            for path in project_root.rglob("*"):
-                if path.is_symlink() or not path.is_file():
-                    continue
-                if path.name.startswith(".") or path.name.endswith((".tmp", ".part")):
-                    continue
-                relative = path.resolve().relative_to(
-                    VIDEO_WORKSHOP_OUTPUT_DIR.resolve()
-                ).as_posix()
-                entries.add(("video-output", relative))
-        if not entries:
-            continue
-        store.register_private_media_batch(
-            entries,
-            str(binding.get("ownerId") or ""),
-            team_id=str(binding.get("teamId") or ""),
-            provenance_kind="video-workshop-project",
-            provenance_id=project_id,
-        )
-        projects += 1
-        files += len(entries)
-    return {"projects": projects, "files": files}
+    return store.reconcile_video_workshop_media_registry_incremental()
 
 
 async def _video_workshop_media_reconciler():
