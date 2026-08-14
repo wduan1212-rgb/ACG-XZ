@@ -471,10 +471,12 @@ class BatchPollStabilityTest(unittest.TestCase):
     def test_batch_image_recovery_persists_plan_and_each_output_before_continuing(self):
         source = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
         self.assertIn('persistRecoveredDocuments("productions", p)', source)
-        self.assertIn(
-            "await persistBatchProductionCheckpoint(p);\n      await runBatchImagesToReview",
-            source,
-        )
+        planner = source.index("async function planAndPersistBatchImageCards")
+        card_call = source.index("const result = await AI.generateImagePromptCard", planner)
+        before_card = source.rindex("await persistBatchProductionCheckpoint(p);", planner, card_call)
+        after_card = source.index("await persistBatchProductionCheckpoint(p);", card_call)
+        self.assertLess(before_card, card_call)
+        self.assertGreater(after_card, card_call)
         loading = source.index('it.status = "loading";')
         submit = source.index("const req = await provider.submit", loading)
         checkpoint = source.index("await persistBatchProductionCheckpoint(p);", loading)
@@ -530,6 +532,49 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertEqual(result["redraft"], "redraft")
         self.assertEqual(result["confirm"], "confirm")
 
+    def test_partial_image_settlement_keeps_account_retryable_without_red_failure(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { batchImageSettlement, batchImageRetryAction, classifyHydratedBatchRecovery } = await import("./js/agent/orchestrator.js");
+            const { statusPill } = await import("./js/domain/productions.js");
+            state.assets = [
+              { id:"a1", accountId:"account-a", type:"图片", delivered:false, fileMissing:false },
+              { id:"a4", accountId:"account-a", type:"图片", delivered:false, fileMissing:false },
+            ];
+            const production = {
+              id:"partial", mode:"图文", accountId:"account-a", stage:"images", stageStatus:"pending",
+              artifacts:{ images:{ recovery:{ status:"result-confirming" }, items:[
+                { assetId:"a1", prompt:"第一张", status:"done" },
+                { assetId:null, prompt:"第二张", status:"confirming" },
+                { assetId:null, prompt:"第三张", status:"failed" },
+                { assetId:"a4", prompt:"第四张", status:"done" },
+              ] } }
+            };
+            const settlement = batchImageSettlement(production);
+            state.productions = [production];
+            const hydrated = classifyHydratedBatchRecovery({ id:"batch", createdAt:Date.now(), productionIds:[production.id] });
+            console.log(JSON.stringify({
+              settlement,
+              retryAction:batchImageRetryAction(production.artifacts.images.items),
+              pill:statusPill(production),
+              attention:hydrated.attention.map(item => item.id),
+              waiting:hydrated.waiting.map(item => item.id),
+            }));
+            """
+        )
+        self.assertFalse(result["settlement"]["complete"])
+        self.assertEqual(result["settlement"]["confirmingIndexes"], [1])
+        self.assertEqual(result["settlement"]["failedIndexes"], [2])
+        self.assertEqual(result["retryAction"], "confirm")
+        self.assertEqual(result["pill"], ["结果待确认", "need-input"])
+        self.assertEqual(result["attention"], ["partial"])
+        self.assertEqual(result["waiting"], [])
+
     def test_unknown_image_outcome_is_not_terminal_failure_or_duplicate_submit(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
         providers = (APP_DIR / "js/api/providers.js").read_text(encoding="utf-8")
@@ -544,9 +589,13 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn('deferred.outcomeUnknown = true', providers)
         self.assertIn('retryable.code = "PROVIDER_RETRY_REQUIRED"', providers)
         self.assertIn('retryable.newOperationRequired = true', providers)
-        self.assertIn('status: "explicit-retry-required"', orchestrator)
+        self.assertIn('status: generated.confirmingIndexes?.length ? "result-confirming" : "missing-images"', orchestrator)
+        self.assertIn('if (err?.checkpointPending) throw err;\n      continue;', orchestrator)
+        self.assertIn('if (!it.assetId && it.status === "confirming")', orchestrator)
         self.assertIn('prepareExplicitBatchImageRetry(p)', orchestrator)
         self.assertIn('RESETTABLE_BATCH_MEDIA_ISSUES.has(issue.reason)', orchestrator)
+        cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
+        self.assertIn("重试缺失图片", cards)
 
     def test_review_transition_clears_stale_production_and_item_errors(self):
         result = self.run_node(

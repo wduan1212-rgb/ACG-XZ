@@ -256,7 +256,7 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('"batch-vision-plan" : "batch-balanced-plan"', orchestrator)
         self.assertIn("imageRefsForSelection(intendedRefAssetIds, refGroups)", orchestrator)
         self.assertIn("enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction)", orchestrator)
-        self.assertIn("referencePlans: imageReferencePlan.cards", orchestrator)
+        self.assertIn("const referencePlan = (imageReferencePlan?.cards || []).find", orchestrator)
         self.assertIn("prepareBatchImageCopyReferenceContext", orchestrator)
         self.assertIn("balancedReferenceFallback", orchestrator)
         self.assertIn('item.referenceSource = A.referencePlan?.source === "vision" ? "batch-vision-plan" : "batch-balanced-plan"', orchestrator)
@@ -265,8 +265,10 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn("referenceContext: copyReferenceBrief.brief", orchestrator)
         self.assertLess(
             orchestrator.index("const imageReferencePlan = await prepareBatchImageReferencePlan"),
-            orchestrator.index("const imgPromptRes = await AI.generateImagePrompts")
+            orchestrator.index("await planAndPersistBatchImageCards")
         )
+        self.assertIn("AI.generateImagePromptCard", orchestrator)
+        self.assertIn('policy: "per-card-plain-text-v1"', orchestrator)
         self.assertIn("依据这份规划和既有完整规格重新生成", ai)
         self.assertIn("附件使用：${use}", ai)
         self.assertIn("/api/llm/image-reference-plan", ai)

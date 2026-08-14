@@ -4,7 +4,7 @@
 import { db, openLegacyState } from "./db.js";
 import { state } from "./store.js";
 import { uid, dataUrlToBlob } from "./util.js";
-import { blankArtifacts, normalizeVideoTimes } from "../domain/productions.js?v=20260813-v1432-publish-export-1";
+import { blankArtifacts, normalizeVideoTimes } from "../domain/productions.js?v=20260814-v1433-batch-partial-recovery-1";
 
 async function dataUrlToAsset(accountId, { name, type = "图片", tags = [], dataUrl, extra = {} }) {
   const a = { id: uid(), accountId, name: name || "素材", type, tags, createdAt: Date.now(), hasBlob: false, ...extra };

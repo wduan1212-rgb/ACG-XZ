@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260813-v1432-publish-export-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260814-v1433-batch-partial-recovery-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -2821,6 +2821,95 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   /* ---------- 图文：逐张图片提示词 ---------- */
+  async generateImagePromptCard({ script, shot = null, account = {}, style = "", imageTemplate = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, imageIndex = 0, product = null, topic = "", copy = null, referencePlan = null }) {
+    const nImg = Math.max(1, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
+    const index = Math.max(0, Math.min(nImg - 1, Number(imageIndex) || 0));
+    const safeTopic = sanitizeXhsText(cleanText(topic || ""));
+    const safeScript = sanitizeXhsText(cleanText(scriptInputText(script)));
+    const safeStyle = sanitizeXhsText(cleanText(style || account?.styleProfile || ""));
+    const safeTpl = sanitizeXhsText(stripPromptScaffold(String(imageTemplate || "").trim()));
+    const copyTitle = sanitizeXhsText(stripVisibleTextLabels(cleanText(normalizeGeneratedEscapes(copy?.title || ""))).trim());
+    const copyBody = sanitizeXhsText(cleanText(normalizeGeneratedEscapes(copy?.body || copy?.copy || "")))
+      .replace(/#[^\s#]+/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    product = primaryProductForText(`${safeTopic}\n${copyTitle}\n${copyBody}\n${safeScript}`, product);
+    const copyForPrompt = copy
+      ? { ...copy, title: copyTitle, headline: copyTitle, body: copyBody, copy: copyBody }
+      : null;
+    const hasCopyBrief = !!(copyTitle || copyBody);
+    const contentBeats = hasCopyBrief ? copyContentBeats(copyTitle, copyBody, nImg) : splitImageBeats({
+      script: safeScript,
+      topic: safeTopic,
+      copy: copyForPrompt,
+    }, nImg);
+    const beat = contentBeats[index] || copyBody || copyTitle || safeTopic || safeScript;
+    const referencePlans = normalizePromptReferencePlans(referencePlan ? [{ ...referencePlan, index }] : [], nImg);
+    const reference = promptReferencePlanAt(referencePlans, index);
+    const cardRole = index === 0
+      ? "封面：只保留完整主标题、短副标题和一个强主视觉，简洁低噪点"
+      : "内容页：一个清楚结论和 2—4 个来自本页正文的具体支撑模块，信息密集但字号可读";
+    let modelPrompt = "";
+    let source = "llm-card";
+    let modelError = "";
+    try {
+      const content = await llm([
+        {
+          role: "system",
+          content: imagePromptProductBrief(product) + `\n\n你是小红书静态图卡提示词设计师。现在只负责一张图，不规划其他图片。标题和本页已分配正文是唯一事实来源；账号资料、模板和参考图只决定视觉表达，不能补写新的产品能力、案例、数字或结论。输出一段可直接交给图片模型的中文正向提示词，写清 3:4 竖版画面的布局、主视觉、关键界面/文件/数据卡、允许出现的短文字、光线和颜色。${cardRole}。${reference.instruction ? "必须落实给定的附件使用方式，但不要复述附件内容。" : "没有附件使用要求时不要虚构附件。"}不要输出 JSON、Markdown、代码围栏、字段名、解释或任务复述。`
+        },
+        {
+          role: "user",
+          content: `这是第 ${index + 1}/${nImg} 张。\n发布标题：${copyTitle || safeTopic}\n本页唯一内容：${beat}\n图卡草案：${sanitizeXhsText(cleanText([shot?.idea, shot?.visual, shot?.line].filter(Boolean).join("；")))}\n账号视觉风格：${safeStyle || "白底或浅色底、圆角卡片、大留白、蓝紫点缀"}${safeTpl ? `\n账号视觉模板：${safeTpl}` : ""}${reference.instruction ? `\n附件使用：${reference.instruction}` : ""}`
+        }
+      ], { json: false, temperature: 0.62 });
+      modelPrompt = cleanText(normalizeGeneratedEscapes(content))
+        .replace(/^```(?:text|markdown)?\s*/i, "")
+        .replace(/```$/i, "")
+        .replace(/^\s*(?:提示词|prompt)\s*[:：]\s*/i, "")
+        .trim();
+      if (!modelPrompt) throw new Error("模型没有返回本张图卡提示词");
+      if (!promptMatchesAssignedCopy(modelPrompt, beat, index === 0 ? copyTitle : "")) {
+        source = "copy-safe-fallback";
+        modelError = "模型输出未覆盖本张已分配正文，已改用文案安全组装";
+        modelPrompt = "";
+      }
+      this.lastSource = source;
+      this.lastError = modelError;
+    } catch (error) {
+      // 单卡语言模型失败不能把整条内容拖死。这里仅用已经确认的标题、
+      // 本页正文节拍和视觉草案组装提示词，不添加任何业务事实，也不重复调用模型。
+      source = "copy-safe-fallback";
+      modelError = error?.message || String(error || "图卡提示词生成失败");
+      this.lastSource = source;
+      this.lastError = modelError;
+    }
+    const rawItems = Array.from({ length: nImg }, () => ({}));
+    rawItems[index] = {
+      title: shot?.idea || beat,
+      headline: index === 0 ? (copyTitle || safeTopic) : beat,
+      prompt: modelPrompt,
+      ui: true,
+    };
+    const ctx = {
+      script: safeScript,
+      topic: safeTopic,
+      account,
+      style: safeStyle,
+      imageTemplate: safeTpl,
+      styleRefName: "",
+      imageCount: nImg,
+      product,
+      copy: copyForPrompt,
+      contentBeats,
+      referencePlans,
+      trendPrep: null,
+    };
+    const normalized = (hasCopyBrief ? normalizeCopyDrivenImagePromptItems : normalizeImagePromptItems)(rawItems, ctx);
+    return { shot: normalized[index], source, error: modelError };
+  },
+
   async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null, referencePlans = [], requireLlm = false }) {
     const tpl = String(imageTemplate || "").trim();
     const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));

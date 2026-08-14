@@ -1989,6 +1989,7 @@ def _normalize_small_image_reference(
     *,
     minimum_short_side: int = 256,
     maximum_aspect_ratio: float = 3.0,
+    maximum_long_side: int = 4096,
 ) -> Tuple[bytes, str, bool]:
     """Prepare narrow/tiny references for MaaS without changing source pixels.
 
@@ -2010,7 +2011,12 @@ def _normalize_small_image_reference(
             needs_margin = max(width, height) / max(1, shortest) > maximum_aspect_ratio
             if not needs_scale and not needs_margin:
                 return blob, mime, False
-            scale = minimum_short_side / max(1, shortest) if needs_scale else 1.0
+            # Do not upscale a 1x4096 strip to 256x1,048,576 before padding it.
+            # The visual pixels must remain uncropped, but the transport canvas
+            # also needs a hard memory bound for malformed/extreme references.
+            desired_scale = minimum_short_side / max(1, shortest) if needs_scale else 1.0
+            bounded_scale = maximum_long_side / max(1, max(width, height))
+            scale = min(desired_scale, bounded_scale)
             scaled = (
                 max(1, int(round(width * scale))),
                 max(1, int(round(height * scale))),

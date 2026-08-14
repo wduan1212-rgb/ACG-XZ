@@ -467,6 +467,10 @@ export function currentJobsOf(p) {
 export function statusPill(p) {
   if (p.stage === "delivered") return ["已交付", "delivered"];
   if (p.stageStatus === "failed") return ["失败", "failed"];
+  if (p.mode === "图文" && p.stage === "images"
+    && ["result-confirming", "missing-images"].includes(String(p.artifacts?.images?.recovery?.status || ""))) {
+    return [p.artifacts.images.recovery.status === "result-confirming" ? "结果待确认" : "待补图片", "need-input"];
+  }
   const stage = normalizeStage(p);
   if (p.stageStatus === "running") return [stage === "workshop" ? "全自动生成中" : STAGES[stage].label + "中", "running"];
   if (stage === "review") {

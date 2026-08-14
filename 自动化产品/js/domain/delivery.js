@@ -4,16 +4,16 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260813-v1432-publish-export-1";
+import { setStage, touch } from "./productions.js?v=20260814-v1433-batch-partial-recovery-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260813-v1432-publish-export-1";
+import { assertPublishText } from "./publishRules.js?v=20260814-v1433-batch-partial-recovery-1";
 import {
   accountPublishAvailable,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "./productionQuota.js?v=20260813-v1432-publish-export-1";
-import { resolvePublishPlanDate } from "./publishSchedule.js?v=20260813-v1432-publish-export-1";
+} from "./productionQuota.js?v=20260814-v1433-batch-partial-recovery-1";
+import { resolvePublishPlanDate } from "./publishSchedule.js?v=20260814-v1433-batch-partial-recovery-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -311,6 +311,8 @@ export async function deliver(p, opts = {}) {
   productionDraft.delivery = { assetId: asset.id, name, at: now, pubSeq, planDate: asset.planDate, productTag, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
   productionDraft.stage = "delivered";
   productionDraft.stageStatus = "done";
+  productionDraft.error = null;
+  if (productionDraft.artifacts?.images?.recovery) productionDraft.artifacts.images.recovery = null;
   productionDraft.updatedAt = now;
 
   if (remote.isOn()) {

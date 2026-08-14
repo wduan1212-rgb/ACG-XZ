@@ -21,6 +21,70 @@ def run_node(source: str) -> dict:
 
 
 class BatchPromptJsonRepairTest(unittest.TestCase):
+    def test_batch_card_planning_uses_plain_text_and_one_card_fallback_is_isolated(self):
+        payload = run_node(r'''
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', protocol:'http:', hostname:'127.0.0.1', port:'8787', hash:'' };
+globalThis.window = { location:globalThis.location, addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+const requests = [];
+globalThis.fetch = async (_url, options = {}) => {
+  const request = JSON.parse(options.body || '{}');
+  requests.push(request);
+  const user = String(request.messages?.at?.(-1)?.content || '');
+  if (user.includes('第 3/4 张')) {
+    return { ok:false, status:503, headers:{ get(){ return null; } }, text:async()=> 'temporary upstream failure' };
+  }
+  const marker = (user.match(/第 (\d)\/4 张/) || [])[1] || '1';
+  const beat = (user.match(/本页唯一内容：([^\n]+)/) || [])[1] || '客户访谈流程';
+  const content = `3:4竖版信息卡，完整呈现「${beat}」，作为客户访谈的第${marker}步，使用清楚标题、流程箭头和证据卡片。`;
+  return {
+    ok:true, status:200, headers:{ get(){ return null; } }, text:async()=>'',
+    json:async()=>({ choices:[{ message:{ content } }] })
+  };
+};
+
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=per-card-plain-test');
+const copy = {
+  title:'客户访谈怎么整理成可复用报告',
+  body:'先确认访谈目标和受访者范围。访谈时记录问题、证据和原话。整理时合并重复观点并标记分歧。最后输出结论、证据和下一步行动。'
+};
+const cards = await Promise.all(Array.from({ length:4 }, (_, index) => AI.generateImagePromptCard({
+  script:'按正文拆成四张图',
+  shot:{ idea:`访谈步骤${index + 1}`, visual:'白底流程卡片' },
+  account:{ styleProfile:'白底清晰信息卡' },
+  imageCount:4,
+  imageIndex:index,
+  topic:copy.title,
+  copy,
+  referencePlan:index === 1 ? { index, referenceIds:['r1'], instruction:'附件放在右侧作为操作证据' } : null
+})));
+console.log(JSON.stringify({
+  requestCount:requests.length,
+  jsonRequests:requests.filter(request => request.response_format).length,
+  asksForPlainText:requests.every(request => String(request.messages?.[0]?.content || '').includes('不要输出 JSON')),
+  sources:cards.map(card => card.source),
+  promptLengths:cards.map(card => card.shot?.prompt?.length || 0),
+  uniquePrompts:new Set(cards.map(card => card.shot?.prompt || '')).size,
+  fallbackHasFacts:String(cards[2]?.shot?.prompt || '').includes('问题') && String(cards[2]?.shot?.prompt || '').includes('证据'),
+  referencePlacement:String(cards[1]?.shot?.prompt || '').includes('附件使用：附件放在右侧作为操作证据')
+}));
+''')
+        self.assertEqual(4, payload["requestCount"])
+        self.assertEqual(0, payload["jsonRequests"])
+        self.assertTrue(payload["asksForPlainText"])
+        self.assertEqual("copy-safe-fallback", payload["sources"][2])
+        self.assertEqual(3, payload["sources"].count("llm-card"))
+        self.assertTrue(all(length > 60 for length in payload["promptLengths"]))
+        self.assertEqual(4, payload["uniquePrompts"])
+        self.assertTrue(payload["fallbackHasFacts"])
+        self.assertTrue(payload["referencePlacement"])
+
     def test_concurrent_boards_use_one_scoped_format_repair_before_image_submit(self):
         payload = run_node(r'''
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -59,7 +123,7 @@ const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260813-v1432-publish-export-1');
+const { AI } = await import('./js/api/ai.js?v=20260814-v1433-batch-partial-recovery-1');
 const completedTask = { id:'done', stage:'review', images:[{ id:'kept' }] };
 const completedBefore = JSON.stringify(completedTask);
 const requestFor = topic => AI.generateImagePrompts({
@@ -129,7 +193,7 @@ const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260813-v1432-publish-export-1');
+const { AI } = await import('./js/api/ai.js?v=20260814-v1433-batch-partial-recovery-1');
 let error = '';
 try {
   await AI.generateImagePrompts({

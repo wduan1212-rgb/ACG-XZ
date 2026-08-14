@@ -4,24 +4,24 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260813-v1432-publish-export-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260814-v1433-batch-partial-recovery-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260813-v1432-publish-export-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260813-v1432-publish-export-1";
+} from "./orchestrator.js?v=20260814-v1433-batch-partial-recovery-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260814-v1433-batch-partial-recovery-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260813-v1432-publish-export-1";
-import { deliver } from "../domain/delivery.js?v=20260813-v1432-publish-export-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260814-v1433-batch-partial-recovery-1";
+import { deliver } from "../domain/delivery.js?v=20260814-v1433-batch-partial-recovery-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260813-v1432-publish-export-1";
+import { refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260814-v1433-batch-partial-recovery-1";
 import { qianfanTopicIdeas } from "../core/remote.js";
-import { validatePublishText } from "../domain/publishRules.js?v=20260813-v1432-publish-export-1";
+import { validatePublishText } from "../domain/publishRules.js?v=20260814-v1433-batch-partial-recovery-1";
 
 let mounted = false;
 let rootEl = null;
@@ -407,12 +407,17 @@ const PHASE_LABEL = { drafting: "批量起草中", generating: "生成中", revi
 /* 进度卡就地更新（只改进度条宽度与分段计数），避免整卡换节点导致闪烁跳跃 */
 function updateProgressCard(node, b) {
   const prods = batchProds(b);
-  const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0 };
+  const needsImageAttention = p => p?.mode === "图文" && p.stage === "images"
+    && ["result-confirming", "missing-images"].includes(String(p.artifacts?.images?.recovery?.status || ""));
+  const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0, recover: 0 };
   prods.forEach(p => {
     if (p.stageStatus === "failed") c.fail++;
     else if (p.stage === "delivered") c.done++;
     else if (p.stage === "review") c.review++;
-    else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
+    else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && (p.stageStatus === "running" || needsImageAttention(p)))) {
+      c.gen++;
+      if (needsImageAttention(p)) c.recover++;
+    }
     else c.draft++;
   });
   const pct = prods.length ? Math.round(c.done / prods.length * 100) : 0;
@@ -422,6 +427,15 @@ function updateProgressCard(node, b) {
   if (segs) {
     const seg = (label, n, cls) => n ? `<span class="agp-seg ${cls}"><b>${n}</b>${label}</span>` : "";
   segs.innerHTML = seg("起草", c.draft, "draft") + seg("生成", c.gen, "gen") + seg("待审", c.review, "review") + seg("已交付", c.done, "done") + seg("失败", c.fail, "fail");
+  }
+  const recovery = node.querySelector(".agp-recovery");
+  if (recovery) {
+    recovery.hidden = c.recover === 0;
+    recovery.childNodes.forEach(child => {
+      if (child.nodeType === Node.TEXT_NODE && String(child.textContent || "").includes("条内容")) {
+        child.textContent = ` ${c.recover} 条内容有缺失图片，其余图片已继续生成 `;
+      }
+    });
   }
 }
 function refreshLiveCards() {
@@ -620,7 +634,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260813-v1432-publish-export-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260814-v1433-batch-partial-recovery-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -651,7 +665,10 @@ function renderPhase() {
     if (p.stageStatus === "failed") c.fail++;
     else if (p.stage === "delivered") c.done++;
     else if (p.stage === "review") c.review++;
-    else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
+    else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && (
+      p.stageStatus === "running"
+      || ["result-confirming", "missing-images"].includes(String(p.artifacts?.images?.recovery?.status || ""))
+    ))) c.gen++;
     else c.draft++;
   }));
   const chip = (label, n, cls) => n ? `<span class="phase-chip ${cls}">${label} ${n}</span>` : "";
@@ -1052,10 +1069,10 @@ function wire(root) {
       case "batch-retry": if (batch) {
         const n = retryFailedIn(batch);
         const text = n
-          ? `已收到重试指令，正在重新排队 ${n} 个失败任务。任务会原位更新，不会重复提交已成功项。`
-          : "已检查当前批次，没有可重试的失败任务。";
+          ? `已收到重试指令，正在重新排队 ${n} 个待补任务。任务会原位更新，不会重复提交已成功项。`
+          : "已检查当前批次，没有可重试的失败或缺失任务。";
         agentSay(text);
-        toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务");
+        toast(n ? `正在重试 ${n} 个待补任务` : "没有可重试任务");
         refreshLiveCards();
         renderBoard();
       } break;

@@ -4,14 +4,20 @@ import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, isAccountDisabled } from "../domain/accounts.js";
-import { accountPublishQuota } from "../domain/productionQuota.js?v=20260813-v1432-publish-export-1";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260813-v1432-publish-export-1";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260813-v1432-publish-export-1";
+import { accountPublishQuota } from "../domain/productionQuota.js?v=20260814-v1433-batch-partial-recovery-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260814-v1433-batch-partial-recovery-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260814-v1433-batch-partial-recovery-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "视频号", real: "视频号" };
 const CONTENT_KIND_LABEL = { image: "图文", static: "静态视频", material: "创意视频", real: "数字人" };
+
+function batchImageNeedsAttention(p) {
+  return p?.mode === "图文"
+    && p.stage === "images"
+    && ["result-confirming", "missing-images"].includes(String(p.artifacts?.images?.recovery?.status || ""));
+}
 
 /* 旧数据里偶尔会把“昵称+英文别名”整段重复写入 name。
    这里只修正展示投影，不回写账号数据，避免影响历史任务和交付命名。 */
@@ -362,12 +368,15 @@ const CARD = {
     if (!b) return `<div class="ag-bubble agent">批次已不存在</div>`;
     const prods = batchProds(b);
     const seg = (label, n, cls) => n ? `<span class="agp-seg ${cls}"><b>${n}</b>${label}</span>` : "";
-    const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0 };
+    const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0, recover: 0 };
     prods.forEach(p => {
       if (p.stageStatus === "failed") c.fail++;
       else if (p.stage === "delivered") c.done++;
       else if (p.stage === "review") c.review++;
-      else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
+      else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && (p.stageStatus === "running" || batchImageNeedsAttention(p)))) {
+        c.gen++;
+        if (batchImageNeedsAttention(p)) c.recover++;
+      }
       else c.draft++;
     });
     const pct = prods.length ? Math.round(c.done / prods.length * 100) : 0;
@@ -378,6 +387,7 @@ const CARD = {
       <div class="agp-segs">
         ${seg("起草", c.draft, "draft")}${seg("生成", c.gen, "gen")}${seg("待审", c.review, "review")}${seg("已交付", c.done, "done")}${seg("失败", c.fail, "fail")}
       </div>
+      <div class="agp-recovery" ${c.recover ? "" : "hidden"}>${icon("refresh", 13)} ${c.recover} 条内容有缺失图片，其余图片已继续生成 <button class="link-btn" data-act="batch-retry" data-batch="${b.id}">重试缺失图片</button></div>
     </div>`;
   },
 
@@ -389,6 +399,7 @@ const CARD = {
     const prods = batchProds(b);
     const inReview = prods.filter(p => p.stage === "review");
     const failed = prods.filter(p => p.stageStatus === "failed");
+    const recoverable = prods.filter(batchImageNeedsAttention);
     const rows = inReview.map(p => {
       const acc = accountById(p.accountId);
       const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
@@ -413,6 +424,7 @@ const CARD = {
     return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
       <div class="agc-head">${icon("eye", 15)}<b>定稿发布</b><span class="agc-state review">${inReview.length} 条待发布</span></div>
       ${rows || `<div class="agc-p ok">${icon("checkCircle", 14)} 本批全部处理完毕</div>`}
+      ${recoverable.length ? `<div class="agc-p">${icon("refresh", 13)} 另有 ${recoverable.length} 条待补图片 <button class="link-btn" data-act="batch-retry" data-batch="${b.id}">重试缺失图片</button></div>` : ""}
       ${failed.length ? `<div class="agc-p fail">${icon("alert", 13)} 另有 ${failed.length} 条失败 <button class="link-btn" data-act="batch-retry" data-batch="${b.id}">重试失败项</button></div>` : ""}
       ${inReview.length && canPub ? `<div class="agc-foot">
         <button class="btn primary sm" data-act="batch-deliver-all" data-batch="${b.id}">${icon("package", 14)} 全部定稿发布</button>

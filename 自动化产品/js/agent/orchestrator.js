@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260813-v1432-publish-export-1";
+import { AI } from "../api/ai.js?v=20260814-v1433-batch-partial-recovery-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260813-v1432-publish-export-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260813-v1432-publish-export-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260814-v1433-batch-partial-recovery-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260814-v1433-batch-partial-recovery-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260813-v1432-publish-export-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260814-v1433-batch-partial-recovery-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260813-v1432-publish-export-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260814-v1433-batch-partial-recovery-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -1339,7 +1339,7 @@ export const activeBatches = () => state.batches.filter(b => b.phase !== "done" 
    都是权威持久态，因此只按可证明的检查点分类：已有图片提示词才接续生图，
    图片已齐只推进审核，空计划则回到起草，不把 0/0 外壳永久留在生成中。 */
 export function classifyHydratedBatchRecovery(batch) {
-  const recovery = { draft: [], images: [], settle: [], invalid: [], waiting: [], stale: [] };
+  const recovery = { draft: [], images: [], settle: [], invalid: [], waiting: [], attention: [], stale: [] };
   const createdAt = Number(batch?.createdAt || 0);
   const staleRedraft = !createdAt || Date.now() - createdAt > HYDRATION_REDRAFT_MAX_AGE_MS;
   batchProds(batch).forEach(p => {
@@ -1366,7 +1366,17 @@ export function classifyHydratedBatchRecovery(batch) {
       }
       const missing = items.filter(item => !item?.assetId);
       if (missing.some(item => item?.status === "confirming")) {
-        recovery.waiting.push(p);
+        // 运行中的请求仍属于等待；已经落成“待确认/可重试”的任务只需要用户
+        // 决策，不再伪装成后台仍在持续工作的思考状态。
+        if (p.stageStatus === "pending" && p.artifacts?.images?.recovery?.status === "result-confirming") {
+          recovery.attention.push(p);
+        } else {
+          recovery.waiting.push(p);
+        }
+        return;
+      }
+      if (p.stageStatus === "pending" && p.artifacts?.images?.recovery?.status === "missing-images") {
+        recovery.attention.push(p);
         return;
       }
       if (missing.length && missing.every(item => String(item?.prompt || "").trim())) {
@@ -1387,6 +1397,22 @@ export function batchImageRetryAction(items = []) {
   if (missing.some(item => item?.status === "confirming")) return "confirm";
   if (missing.some(item => String(item?.prompt || "").trim())) return "resume";
   return "redraft";
+}
+
+export function batchImageSettlement(p) {
+  const items = Array.isArray(p?.artifacts?.images?.items) ? p.artifacts.images.items : [];
+  const issues = productionImageAssetIssues(p);
+  const indexes = [...new Set(issues.map(issue => Number(issue.index)).filter(Number.isFinite))];
+  const confirmingIndexes = indexes.filter(index => items[index]?.status === "confirming");
+  const failedIndexes = indexes.filter(index => items[index]?.status === "failed");
+  const pendingIndexes = indexes.filter(index => !confirmingIndexes.includes(index) && !failedIndexes.includes(index));
+  return {
+    complete: items.length > 0 && issues.length === 0,
+    issueCount: issues.length,
+    confirmingIndexes,
+    failedIndexes,
+    pendingIndexes,
+  };
 }
 
 export function hydratedBatchThinkingState(sessionId = state.ui.activeSessionId) {
@@ -1738,6 +1764,101 @@ function applyBatchImageReferencePlan(p, batch, refGroups, items = []) {
   });
 }
 
+/* 批量图文不再要求语言模型一次返回整组大 JSON。每张图卡是独立、可落盘的
+   规划单元：一张模型输出异常时只对该张使用“已确认文案安全组装”，已经完成的
+   卡片不会重写；刷新后也从最后一张已确认卡继续。 */
+async function planAndPersistBatchImageCards(p, batch, acc, {
+  shots = [], style = "", product = null, topic = "", batchVariant = null,
+  imageReferencePlan = null,
+} = {}) {
+  const A = p.artifacts.images;
+  const total = Math.max(1, Math.min(12, shots.length || p.artifacts?.script?.imageCount || DEFAULT_XHS_IMAGE_COUNT));
+  const previous = Array.isArray(A.items) ? A.items : [];
+  A.items = Array.from({ length: total }, (_, index) => {
+    const shot = shots[index] || {};
+    const old = previous[index] || {};
+    return {
+      ...old,
+      title: old.title || shot.idea || `图片${index + 1}`,
+      visual: shot.visual || old.visual || "",
+      prompt: String(old.prompt || "").trim(),
+      assetId: old.assetId || null,
+      status: old.assetId ? "done" : (old.status === "confirming" ? "confirming" : old.prompt ? old.status || "idle" : "planning"),
+      promptStatus: old.prompt ? "done" : "planning",
+      promptSource: old.promptSource || "",
+      promptError: old.promptError || "",
+    };
+  });
+  applyBatchImageReferencePlan(p, batch, imageReferencePlan?.refGroups || imageRefGroupsFor(acc, batch, p), A.items);
+  A.promptPlanning = {
+    policy: "per-card-plain-text-v1",
+    status: "running",
+    total,
+    completed: A.items.filter(item => item.promptStatus === "done" && String(item.prompt || "").trim()).length,
+    updatedAt: Date.now(),
+  };
+  await persistBatchProductionCheckpoint(p);
+  const pendingIndexes = Array.from({ length: total }, (_, index) => index).filter(index => {
+    const item = A.items[index];
+    return !(item.promptStatus === "done" && String(item.prompt || "").trim());
+  });
+  // 提示词请求可以并行，但 production 检查点必须串行提交，否则同一条内容的
+  // 两个远端写入会互相覆盖。两路并行既缩短四张图的等待时间，也不放大账号级
+  // 外层并发；每张完成后仍立即进入唯一的持久化队列。
+  let checkpointTail = Promise.resolve();
+  const persistPromptCheckpoint = () => {
+    const checkpoint = checkpointTail.then(() => persistBatchProductionCheckpoint(p));
+    checkpointTail = checkpoint.catch(() => {});
+    return checkpoint;
+  };
+  await runPool(pendingIndexes, async index => {
+    const item = A.items[index];
+    item.promptStatus = "running";
+    item.status = "planning";
+    item.promptError = "";
+    await persistPromptCheckpoint();
+    const referencePlan = (imageReferencePlan?.cards || []).find(card => Number(card?.index) === index) || null;
+    const result = await AI.generateImagePromptCard({
+      script: shotsToText(shots, true),
+      shot: shots[index],
+      account: acc,
+      style,
+      imageTemplate: acc.imagePromptTemplate || "",
+      imageCount: total,
+      imageIndex: index,
+      product,
+      topic,
+      batchVariant,
+      copy: p.artifacts.copy,
+      referencePlan,
+    });
+    item.title = result.shot?.title || item.title || `图片${index + 1}`;
+    item.prompt = String(result.shot?.prompt || "").trim();
+    if (!item.prompt) throw new Error(`第 ${index + 1} 张图卡未形成可执行提示词`);
+    item.promptSource = result.source || AI.lastSource || "per-card";
+    item.promptError = result.error || "";
+    item.promptStatus = "done";
+    item.status = item.assetId ? "done" : "idle";
+    A.promptPlanning.completed = A.items.filter(row => (
+      row.promptStatus === "done" && String(row.prompt || "").trim()
+    )).length;
+    A.promptPlanning.updatedAt = Date.now();
+    await persistPromptCheckpoint();
+  }, 2);
+  A.promptSource = A.items.some(item => item.promptSource === "copy-safe-fallback")
+    ? "per-card-mixed"
+    : "per-card-llm";
+  A.promptPlanning = {
+    ...A.promptPlanning,
+    status: "done",
+    completed: total,
+    finishedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  await persistBatchProductionCheckpoint(p);
+  return A.items;
+}
+
 async function ensureBatchImageReferencePlan(p, batch, acc, refGroups, defaultRefs) {
   const A = p.artifacts.images;
   const items = A.items || [];
@@ -1925,15 +2046,22 @@ function generationDeferred(error) {
 
 function clearCompletedBatchImageErrors(p) {
   const invalid = new Set(productionImageAssetIssues(p).map(issue => issue.index));
+  let changed = false;
   (p.artifacts?.images?.items || []).forEach((item, index) => {
     if (invalid.has(index)) return;
     if (!item?.assetId) return;
+    if (item.status !== "done" || item.error || item.confirmation) changed = true;
     item.status = "done";
     item.error = "";
     item.confirmation = null;
   });
-  if (p.artifacts?.images?.recovery) p.artifacts.images.recovery = null;
-  p.error = null;
+  const complete = (p.artifacts?.images?.items || []).length > 0 && invalid.size === 0;
+  if (complete) {
+    if (p.artifacts?.images?.recovery || p.error) changed = true;
+    if (p.artifacts?.images?.recovery) p.artifacts.images.recovery = null;
+    p.error = null;
+  }
+  return { complete, changed };
 }
 
 function rotateBatchImageOperation(p, item, index) {
@@ -2021,6 +2149,11 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     }
     const hasItemRefOverride = Object.prototype.hasOwnProperty.call(it, "refAssetIds");
     if (it.assetId && it.status === "done") continue;
+    // 上一次调用结果未知时，既不重复这张的付费请求，也不阻塞后续不同图片。
+    // 用户明确重试会旋转 operationKey，再由同一循环只补缺失项。
+    if (!it.assetId && it.status === "confirming") {
+      continue;
+    }
     if (!hasItemRefOverride) {
       it.refAssetIds = [...refGroups.all];
       it.referenceSource = "batch-plan";
@@ -2096,18 +2229,15 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       }
       it.error = generationDeferred(err) ? "" : (err?.message || String(err));
       if (err?.referenceReceipt) it.referenceReceipt = err.referenceReceipt;
-      await persistBatchProductionCheckpoint(p).catch(() => {});
-      throw err;
+      // 一个图片调用的结果必须先独立落盘，才能继续派发下一张。除检查点本身
+      // 失败外，单图错误不再中断后续图片；最终由统一 settlement 标出待补项。
+      await persistBatchProductionCheckpoint(p);
+      if (err?.checkpointPending) throw err;
+      continue;
     }
   }
   if (!items.length) throw new Error("站内生图计划没有可执行图片");
-  const issue = productionImageAssetIssues(p)[0];
-  const unresolvedIndex = issue ? issue.index : -1;
-  if (unresolvedIndex >= 0) {
-    const unresolved = items[unresolvedIndex];
-    throw new Error(unresolved?.error || `第 ${unresolvedIndex + 1} 张图片缺少提示词或未返回结果`);
-  }
-  return true;
+  return batchImageSettlement(p);
 }
 
 export async function regenerateBatchImage(p, imageIndex) {
@@ -2192,6 +2322,20 @@ async function runBatchImagesToReview(p, batch) {
   try {
     setBatchPhase(batch, "generating");
     const generated = await generateBatchImagesInHouse(p, batch, acc);
+    if (generated?.complete === false) {
+      p.stage = "images";
+      p.stageStatus = "pending";
+      p.error = null;
+      p.artifacts.images.recovery = {
+        status: generated.confirmingIndexes?.length ? "result-confirming" : "missing-images",
+        imageIndexes: generated.confirmingIndexes || [],
+        failedIndexes: generated.failedIndexes || [],
+        pendingIndexes: generated.pendingIndexes || [],
+        updatedAt: Date.now(),
+      };
+      await persistBatchProductionCheckpoint(p);
+      return false;
+    }
     clearCompletedBatchImageErrors(p);
     setStage(p, "review", "pending");
     // “全部图片已完成”与逐张结果一样属于刷新恢复的权威检查点。
@@ -2200,15 +2344,6 @@ async function runBatchImagesToReview(p, batch) {
     await persistBatchProductionCheckpoint(p);
     return generated;
   } catch (e) {
-    if (e?.outcomeUnknown || e?.code === "PROVIDER_RESULT_UNKNOWN") {
-      p.artifacts.images.recovery = {
-        status: "explicit-retry-required",
-        updatedAt: Date.now(),
-      };
-      setStatus(p, "failed", "图片上游结果未能取回；已保留成功图片，可点击重试缺失项");
-      await persistBatchProductionCheckpoint(p).catch(() => {});
-      return false;
-    }
     if (generationDeferred(e)) {
       p.stageStatus = "pending";
       p.error = null;
@@ -2885,8 +3020,27 @@ async function draftOne(p, batch) {
       const copyPromise = AI.generateImageCopyFromTitle({ title: singleImageTitle, account: acc, product });
       const generated = await generateBatchImagesInHouse(p, batch, acc);
       const item = p.artifacts.images.items[0];
-      if (!generated || !item?.assetId) {
-        await copyPromise.catch(() => null);
+      if (generated?.complete === false || !item?.assetId) {
+        const generatedCopy = await copyPromise.catch(() => null);
+        if (generatedCopy) {
+          p.artifacts.copy = {
+            title: singleImageTitle,
+            body: generatedCopy.copy || "",
+            source: generatedCopy.source || AI.lastSource || "llm-title-copy",
+          };
+        }
+        if (generated?.confirmingIndexes?.length) {
+          p.stage = "images";
+          p.stageStatus = "pending";
+          p.error = null;
+          p.artifacts.images.recovery = {
+            status: "result-confirming",
+            imageIndexes: generated.confirmingIndexes,
+            updatedAt: Date.now(),
+          };
+          await persistBatchProductionCheckpoint(p);
+          return;
+        }
         setStatus(p, "failed", item?.error || "单图生成失败");
         return;
       }
@@ -3067,36 +3221,16 @@ async function draftOne(p, batch) {
       p.artifacts.script.trendPrep = null;
       p.artifacts.script.trendGuide = "";
       // 先用标题、正文、图卡草案和真实统一/定制参考图完成逐图路由，
-      // 再把附件职责输入 MiniMax-M3 的完整提示词生成。
+      // 再逐卡生成和落盘完整提示词；任何单卡格式漂移都不会拖死整条内容。
       const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, shots);
-      const imgPromptRes = await AI.generateImagePrompts({
-        script: shotsToText(shots, true),
-        account: acc,
+      await planAndPersistBatchImageCards(p, batch, acc, {
+        shots,
         style,
-        imageTemplate: acc.imagePromptTemplate || "",
-        imageCount: count,
         product,
         topic: customTopic,
-        styleRefName: "",
         batchVariant,
-        useOnlineTrends: false,
-        trendGuide: "",
-        trendPrep: null,
-        copy: p.artifacts.copy,
-        referencePlans: imageReferencePlan.cards,
-        requireLlm: true
+        imageReferencePlan,
       });
-      p.artifacts.images.promptSource = AI.lastSource;
-      const promptRows = imgPromptRes.shots || [];
-      p.artifacts.images.items = shots.map((s, i) => ({
-        title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
-        visual: s.visual || "",
-        prompt: promptRows[i]?.prompt || `生成小红书图文3:4图片。图片内容必须围绕标题「${p.artifacts.copy.title}」和正文信息「${(p.artifacts.copy.body || s.line || "").slice(0, 360)}」。${s.visual || ""}\n${IMAGE_NEGATIVE_PROMPT}`,
-        assetId: null,
-        status: "idle"
-      }));
-      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
-      await persistBatchProductionCheckpoint(p);
       await runBatchImagesToReview(p, batch);
       return;
     }
@@ -3209,30 +3343,14 @@ async function draftOne(p, batch) {
       p.artifacts.script.trendGuide = "";
       // 正文确定后才让视觉模型看全部统一/定制参考图，逐图指定附件用途和位置。
       const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, imageShots);
-      const imgPromptRes = await AI.generateImagePrompts({
-        script: shotsToText(imageShots, true),
-        account: acc,
+      await planAndPersistBatchImageCards(p, batch, acc, {
+        shots: imageShots,
         style,
-        imageTemplate: acc.imagePromptTemplate || "",
-        imageCount: count,
         product,
         topic: p.title,
-        styleRefName: "",
         batchVariant,
-        copy: p.artifacts.copy,
-        referencePlans: imageReferencePlan.cards,
-        requireLlm: true
+        imageReferencePlan,
       });
-      p.artifacts.images.promptSource = AI.lastSource;
-      const promptRows = imgPromptRes.shots || [];
-      p.artifacts.images.items = imageShots.map((s, i) => ({
-        title: promptRows[i]?.title || `图片${i + 1}`,
-        visual: s.visual || "",
-        prompt: promptRows[i]?.prompt || "",
-        assetId: null,
-        status: "idle"
-      }));
-      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
       await runBatchImagesToReview(p, batch);
       return;
     }
@@ -4042,7 +4160,10 @@ export function evaluate(batchId) {
 
   const drafting = prods.filter(p => p.stage === "script" && p.stageStatus !== "failed").length;
   const failed = prods.filter(p => p.stageStatus === "failed").length;
-  const imageGenerating = prods.filter(p => p.stage === "images" && p.stageStatus === "running").length;
+  const imageGenerating = prods.filter(p => p.stage === "images" && (
+    p.stageStatus === "running"
+    || ["result-confirming", "missing-images"].includes(String(p.artifacts?.images?.recovery?.status || ""))
+  )).length;
   const renderPending = prods.filter(p =>
     ((p.mode === "视频" && p.stage === "render") || p.stage === "workshop")
     && productionCanAutoGenerate(p)).length;
@@ -4081,6 +4202,15 @@ export function evaluate(batchId) {
   // 已发卡片/消息去重：持久化在 batch 上，刷新或状态震荡都不会重复发同一条
   const emitOnce = (ph, fn) => { batch.emitted = batch.emitted || {}; if (!batch.emitted[ph]) { batch.emitted[ph] = true; fn(); } };
 
+  // 单个账号仍在生图或待补图片时，已经完成的其他账号也必须立即进入可审核/可发布区，
+  // 不能再被批次级 phase 串行挡住。
+  if (inReview > 0) {
+    emitOnce("review", () => {
+      addMsg(session, { role: "agent", type: "approval", payload: { batchId: batch.id } });
+      notify("review", `批次「${batch.topic}」已有内容待审核`, `${inReview} 条内容可先人工确认`);
+    });
+  }
+
   if (imageGenerating > 0) { batch.phase = "generating"; }
   else if (drafting > 0) { batch.phase = "drafting"; }
   else if (renderPending > 0 || rendering.length > 0) {
@@ -4099,10 +4229,6 @@ export function evaluate(batchId) {
     }
   } else if (inReview > 0 || (failed > 0 && delivered + inReview > 0)) {
     batch.phase = "review";
-    emitOnce("review", () => {
-      addMsg(session, { role: "agent", type: "approval", payload: { batchId: batch.id } });
-      notify("review", `批次「${batch.topic}」待审核`, `${inReview} 条内容等待人工确认`);
-    });
   } else if (delivered === prods.length && prods.length > 0) {
     batch.phase = "done";
     emitOnce("done", () => {

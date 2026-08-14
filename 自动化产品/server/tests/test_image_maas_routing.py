@@ -116,6 +116,33 @@ class ImageMaasRoutingTest(unittest.TestCase):
             center = normalized.getpixel((normalized.size[0] // 2, normalized.size[1] // 2))
             self.assertLess(sum(abs(center[i] - value) for i, value in enumerate((17, 91, 173))), 18)
 
+    def test_extreme_wide_and_tall_references_are_memory_bounded_without_crop(self):
+        if main.Image is None:
+            self.skipTest("Pillow is required for extreme-reference normalization")
+        for size, mime, image_format in (
+            ((7, 4096), "image/png", "PNG"),
+            ((4096, 9), "image/webp", "WEBP"),
+        ):
+            with self.subTest(size=size):
+                image = main.Image.new("RGB", size, (19, 87, 171))
+                source = io.BytesIO()
+                image.save(source, format=image_format, lossless=True)
+
+                blob, normalized_mime, changed = main._normalize_small_image_reference(
+                    source.getvalue(), mime,
+                )
+
+                self.assertTrue(changed)
+                self.assertEqual(normalized_mime, "image/jpeg")
+                with main.Image.open(io.BytesIO(blob)) as normalized:
+                    self.assertLessEqual(max(normalized.size), 4096)
+                    self.assertLessEqual(max(normalized.size) / min(normalized.size), 3.0)
+                    center = normalized.getpixel((
+                        normalized.size[0] // 2,
+                        normalized.size[1] // 2,
+                    ))
+                    self.assertGreater(sum(255 - channel for channel in center), 100)
+
     def test_multiple_maas_references_remain_native_object_entries(self):
         if main.Image is None:
             self.skipTest("Pillow is required for multi-reference transport")
