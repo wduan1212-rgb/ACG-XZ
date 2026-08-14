@@ -63,6 +63,33 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertEqual(1, by_model[("视频生成", "video-model-b")]["outputUnits"])
         self.assertEqual(2, len(details["assetEvents"]))
 
+    def test_topic_usage_counts_outputs_by_item_and_replay_is_idempotent(self):
+        editor = store.add_member("选题创作者", "topic-creator", "123456", "editor")
+        event_id = "topic-stable-request"
+        self.assertTrue(store.record_api_usage(
+            editor[0], "选题创作者", "topic", "百度搜索 AI 选题",
+            "MiniMax-M3", 50, "条", event_id=event_id,
+        ))
+        self.assertTrue(store.record_api_usage(
+            editor[0], "选题创作者", "topic", "百度搜索 AI 选题",
+            "MiniMax-M3", 50, "条", event_id=event_id,
+        ))
+
+        row = next(
+            item for item in store.model_usage_summary()
+            if item["memberId"] == editor[0]
+        )
+        self.assertEqual(1, row["topicCalls"])
+        self.assertEqual(50, row["topicOutputs"])
+        details = store.model_usage_details(member_id=editor[0])
+        topic = next(
+            item for item in details["assetApiRows"]
+            if item["feature"] == "百度搜索 AI 选题"
+        )
+        self.assertEqual(1, topic["calls"])
+        self.assertEqual(50, topic["outputUnits"])
+        self.assertEqual("条", topic["unitLabel"])
+
     def test_usage_range_filters_legacy_events_without_hiding_members(self):
         editor = store.add_member("范围测试", "usage-range", "123456", "editor")
         store.record_llm_usage(editor[0], "范围测试", "旧调用", "m3", {"total_tokens": 30})

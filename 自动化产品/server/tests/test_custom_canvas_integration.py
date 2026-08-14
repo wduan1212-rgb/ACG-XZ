@@ -893,7 +893,7 @@ console.log(JSON.stringify({{
         self.assertIn("nextReleaseId === canvasReleaseId", integration)
         self.assertIn("iframe.src = canvasEntryUrl(currentProjectId)", integration)
         self.assertIn("}, 60_000);", integration)
-        self.assertNotIn("v=20260814-v1433-batch-partial-recovery-1", integration)
+        self.assertNotIn("v=20260814-v1434-durable-batch-jobs-1", integration)
 
     def test_fastapi_mounts_canvas_without_exposing_external_source_tree(self):
         mounts = [getattr(route, "path", "") for route in main.app.routes]
@@ -1245,7 +1245,7 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reconcile.call_args_list[0].kwargs["receipt_id"], "receipt-token")
         self.assertEqual(reconcile.call_args_list[1].kwargs["receipt_id"], "receipt-no-token")
 
-    async def test_agent_duplicate_or_receipt_write_failure_never_calls_provider(self):
+    async def test_agent_duplicate_never_calls_provider_but_telemetry_failure_does(self):
         request = main.CustomCanvasAgentReq(
             brief="一张海报",
             idempotencyKey="agent-replay",
@@ -1271,15 +1271,29 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.status_code, 409)
                 provider.assert_not_awaited()
 
+        class SuccessfulResponse:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            @staticmethod
+            def json():
+                return {
+                    "id": "provider-after-telemetry-failure",
+                    "choices": [{"message": {"content": '{"prompt":"一张商业海报"}'}}],
+                    "usage": {"total_tokens": 12},
+                }
+
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
             main.store,
             "begin_model_usage_receipt",
             side_effect=main.store.ModelUsageReceiptWriteError("database busy"),
-        ), patch.object(main, "_call_llm", new=AsyncMock()) as provider:
-            with self.assertRaises(main._ModelUsageGateFailure) as raised:
-                await main._custom_canvas_agent_llm(request, member)
-        self.assertEqual(raised.exception.status_code, 503)
-        provider.assert_not_awaited()
+        ), patch.object(
+            main, "_call_llm", new=AsyncMock(return_value=SuccessfulResponse())
+        ) as provider:
+            result = await main._custom_canvas_agent_llm(request, member)
+        self.assertEqual("一张商业海报", result["prompt"])
+        provider.assert_awaited_once()
 
         request.idempotencyKey = ""
         with patch.object(main, "_call_llm", new=AsyncMock()) as provider:

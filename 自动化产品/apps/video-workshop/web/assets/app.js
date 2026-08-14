@@ -4313,14 +4313,6 @@ async function sendMessage(message, fromStart = false) {
     });
     const response = await requestChat(requestProjectId);
     const data = await response.json().catch(() => ({}));
-    if (
-      response.status === 409
-      && data?.detail?.code === "video_workshop_usage_pending"
-    ) {
-      const pendingError = new Error(apiErrorMessage(data, "历史用量待处理"));
-      pendingError.code = "video_workshop_usage_pending";
-      throw pendingError;
-    }
     if (!response.ok) throw new Error(apiErrorMessage(data, "导演请求失败"));
     requestAccepted = true;
     const minimumPendingMs = simpleGreetingPattern.test(cleanMessage) ? 760 : 520;
@@ -4337,8 +4329,7 @@ async function sendMessage(message, fromStart = false) {
   } catch (error) {
     stopPendingThoughts();
     const errorMessage = String(error?.message || error || "请求失败");
-    const keepCurrentConversation = error?.code === "video_workshop_usage_pending";
-    if (pendingToken && !keepCurrentConversation) {
+    if (pendingToken) {
       try {
         state.pendingScrollMessageId = `${pendingToken}-assistant`;
         renderPendingFailure(errorMessage, pendingToken);
@@ -4366,15 +4357,8 @@ async function sendMessage(message, fromStart = false) {
           // Text restoration is best effort; busy recovery is handled below.
         }
       }
-      if (keepCurrentConversation && requestProjectId) {
-        state.messageSignature = "";
-        state.eventSignature = "";
-        await loadProject(requestProjectId, true).catch(() => {});
-      }
     }
-    showToast(keepCurrentConversation
-      ? "该旧会话仍在安全收口；已保留输入，可切换其他会话正常使用"
-      : errorMessage);
+    showToast(errorMessage);
   } finally {
     state.busy = false;
     const startSubmit = dom.startForm?.querySelector("button[type='submit']");

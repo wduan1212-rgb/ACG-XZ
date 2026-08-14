@@ -80,6 +80,7 @@ PERSONAL_SUBSCRIPTION_PLANS = {"personal-pro", "personal-advanced"}
 TEAM_SUBSCRIPTION_PLANS = {"team", "team-pro"}
 CUSTOM_CANVAS_GENERATION_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000
 CUSTOM_CANVAS_GENERATION_JOB_COLLECTION = "customCanvasGenerationJobs"
+BATCH_IMAGE_GENERATION_JOB_COLLECTION = "batchImageGenerationJobs"
 
 
 def normalize_username(value):
@@ -3652,6 +3653,7 @@ _RESOURCE_SCOPE_REFERENCE_FIELDS = {
     "customOutputs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
     "customVideoJobs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
     CUSTOM_CANVAS_GENERATION_JOB_COLLECTION: (("sourceProjectId", "customProjects"),),
+    BATCH_IMAGE_GENERATION_JOB_COLLECTION: (("productionId", "productions"),),
 }
 _RESOURCE_SCOPE_ACG_GLOBAL_COLLECTIONS = {"products", "publishTags"}
 
@@ -14421,14 +14423,24 @@ def llm_usage_summary(since_ms=0):
             conn.close()
 
 
-def record_api_usage(member_id, member_name, api_type, feature, model, output_units=1, unit_label="任务"):
+def record_api_usage(
+    member_id,
+    member_name,
+    api_type,
+    feature,
+    model,
+    output_units=1,
+    unit_label="任务",
+    *,
+    event_id="",
+):
     """记录一次已被上游接受的非 Token 模型调用。
 
     图片、视频等接口通常不会返回可核验的 token usage，因而只记录真实成功请求和
     实际输出单位，绝不把调用次数换算或伪装成 token / 金额。
     """
     kind = str(api_type or "").strip().lower()
-    if kind not in {"image", "video", "voice"}:
+    if kind not in {"image", "video", "voice", "topic"}:
         return False
     try:
         units = max(0, int(output_units or 0))
@@ -14441,10 +14453,11 @@ def record_api_usage(member_id, member_name, api_type, feature, model, output_un
     with _lock:
         conn = _connect()
         try:
+            usage_event_id = str(event_id or "").strip()[:80] or uuid.uuid4().hex[:16]
             conn.execute(
-                "INSERT INTO api_usage_events(id,member_id,member_name,api_type,feature,model,calls,output_units,unit_label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO api_usage_events(id,member_id,member_name,api_type,feature,model,calls,output_units,unit_label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
-                    uuid.uuid4().hex[:16], str(member_id or ""), str(member_name or "成员")[:120],
+                    usage_event_id, str(member_id or ""), str(member_name or "成员")[:120],
                     kind, str(feature or "模型调用")[:80], str(model or "")[:160], 1, units, label,
                     int(time.time() * 1000),
                 ),
@@ -14515,7 +14528,9 @@ def model_usage_summary(since_ms=0):
         })
         if not api_type:
             continue
-        prefix = {"image": "image", "video": "video", "voice": "voice"}.get(api_type, "")
+        prefix = {
+            "image": "image", "video": "video", "voice": "voice", "topic": "topic",
+        }.get(api_type, "")
         if not prefix:
             continue
         row[f"{prefix}Calls"] = int(calls or 0)
@@ -14566,7 +14581,10 @@ def model_usage_summary(since_ms=0):
             int(row.get(f"{prefix}LastUsedAt") or 0), int(last_used_at or 0)
         ) or None
     for row in rows.values():
-        for key in ("imageCalls", "imageOutputs", "videoCalls", "videoOutputs", "voiceCalls", "voiceOutputs"):
+        for key in (
+            "imageCalls", "imageOutputs", "videoCalls", "videoOutputs",
+            "voiceCalls", "voiceOutputs", "topicCalls", "topicOutputs",
+        ):
             row.setdefault(key, 0)
         row.setdefault("confirmedLlmCalls", 0)
         row.setdefault("tokenUnknownCalls", 0)
@@ -14575,7 +14593,8 @@ def model_usage_summary(since_ms=0):
             row.setdefault(f"confirmed{prefix}Outputs", 0)
     return sorted(rows.values(), key=lambda row: (
         -int(row.get("totalTokens") or 0),
-        -(int(row.get("imageCalls") or 0) + int(row.get("videoCalls") or 0) + int(row.get("voiceCalls") or 0)),
+        -(int(row.get("imageCalls") or 0) + int(row.get("videoCalls") or 0)
+          + int(row.get("voiceCalls") or 0) + int(row.get("topicCalls") or 0)),
         str(row.get("memberName") or ""),
     ))
 
@@ -17485,6 +17504,461 @@ def _validate_custom_canvas_generation_source_scope_locked(
         or (str(scope[0]), str(scope[1])) != actor[:2]
     ):
         raise PermissionError("resource_scope_conflict")
+
+
+def _batch_image_generation_job_id(owner_id, client_job_id):
+    owner = str(owner_id or "").strip()
+    client = str(client_job_id or "").strip()
+    if not owner or not re.fullmatch(r"[A-Za-z0-9._:-]{1,180}", client):
+        raise ValueError("invalid_batch_image_generation_job")
+    digest = hashlib.sha256(f"{owner}:{client}".encode("utf-8")).hexdigest()
+    return f"batch-image-generation-{digest}"
+
+
+def _batch_image_generation_job_public(item):
+    if not isinstance(item, dict):
+        return None
+    return {
+        key: item.get(key)
+        for key in (
+            "jobId", "productionId", "accountId", "itemIndex", "operationKey",
+            "status", "progress", "error", "createdAt", "startedAt",
+            "finishedAt", "updatedAt", "asset", "usedRefs", "skippedRefs",
+            "referenceReceipt", "model", "mode", "billing",
+        )
+        if key in item
+    }
+
+
+def create_batch_image_generation_jobs(owner_id, jobs):
+    """Atomically register durable batch-image work before provider access.
+
+    Only compact business identifiers and prompts enter SQLite. Reference
+    bytes remain in their existing private asset files and are resolved by the
+    server worker after it claims a job.
+    """
+    owner = str(owner_id or "").strip()
+    if not owner or not isinstance(jobs, list) or not 1 <= len(jobs) <= 48:
+        raise ValueError("invalid_batch_image_generation_job")
+    normalized = []
+    seen = set()
+    for raw in jobs:
+        if not isinstance(raw, dict):
+            raise ValueError("invalid_batch_image_generation_job")
+        job_id = str(raw.get("clientJobId") or "").strip()
+        production_id = str(raw.get("productionId") or "").strip()
+        account_id = str(raw.get("accountId") or "").strip()
+        operation_key = str(raw.get("operationKey") or "").strip()
+        fingerprint = str(raw.get("requestFingerprint") or "").strip()
+        prompt = str(raw.get("prompt") or "").strip()
+        try:
+            item_index = int(raw.get("itemIndex"))
+        except (TypeError, ValueError):
+            raise ValueError("invalid_batch_image_generation_job")
+        refs = []
+        ref_seen = set()
+        for ref in (raw.get("refs") or [])[:8]:
+            if not isinstance(ref, dict):
+                continue
+            asset_id = str(ref.get("assetId") or ref.get("id") or "").strip()
+            if not asset_id or asset_id in ref_seen:
+                continue
+            ref_seen.add(asset_id)
+            refs.append({
+                "assetId": asset_id,
+                "role": "custom" if str(ref.get("role") or "").lower() == "custom" else "shared",
+                "name": str(ref.get("name") or "").strip()[:160],
+            })
+        asset_name = re.sub(r"\s+", " ", str(raw.get("assetName") or "")).strip()[:180]
+        ratio = str(raw.get("ratio") or "3:4")[:16]
+        expected_fingerprint = _canonical_json_sha256({
+            "clientJobId": job_id,
+            "productionId": production_id,
+            "accountId": account_id,
+            "itemIndex": item_index,
+            "operationKey": operation_key,
+            "prompt": prompt,
+            "refs": refs,
+            "ratio": ratio,
+            "assetName": asset_name,
+        })
+        if (
+            job_id in seen
+            or not production_id
+            or not account_id
+            or not operation_key
+            or not prompt
+            or len(prompt) > 16000
+            or item_index < 0
+            or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+            or not hmac.compare_digest(fingerprint, expected_fingerprint)
+        ):
+            raise ValueError("invalid_batch_image_generation_job")
+        seen.add(job_id)
+        normalized.append({
+            "jobId": job_id,
+            "internalId": _batch_image_generation_job_id(owner, job_id),
+            "productionId": production_id,
+            "accountId": account_id,
+            "itemIndex": item_index,
+            "operationKey": operation_key[:180],
+            "requestFingerprint": fingerprint,
+            "prompt": prompt,
+            "refs": refs,
+            "ratio": ratio,
+            "assetName": asset_name or f"站内笔记图{item_index + 1:02d}",
+        })
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            results = []
+            for request in normalized:
+                internal_id = request["internalId"]
+                row = conn.execute(
+                    "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                    (BATCH_IMAGE_GENERATION_JOB_COLLECTION, internal_id),
+                ).fetchone()
+                if row:
+                    if str(row[0] or "") != owner:
+                        raise PermissionError("forbidden")
+                    existing = json.loads(row[1])
+                    if str(existing.get("requestFingerprint") or "") != request["requestFingerprint"]:
+                        raise ValueError("batch_image_generation_job_conflict")
+                    results.append((_batch_image_generation_job_public(existing), False))
+                    continue
+
+                production_row = _doc_row_in_conn(conn, "productions", request["productionId"])
+                if not production_row or _stored_owner(production_row) != owner:
+                    raise PermissionError("forbidden")
+                production = production_row[1]
+                if str(production.get("accountId") or "") != request["accountId"]:
+                    raise ValueError("batch_image_generation_account_conflict")
+                items = (((production.get("artifacts") or {}).get("images") or {}).get("items") or [])
+                if request["itemIndex"] >= len(items) or not isinstance(items[request["itemIndex"]], dict):
+                    raise ValueError("batch_image_generation_item_missing")
+                production_item = items[request["itemIndex"]]
+                if str(production_item.get("operationKey") or "") != request["operationKey"]:
+                    raise ValueError("batch_image_generation_operation_conflict")
+                for ref in request["refs"]:
+                    asset_row = _doc_row_in_conn(conn, "assets", ref["assetId"])
+                    if (
+                        not asset_row
+                        or not _resource_scope_allows_actor_locked(
+                            conn, "assets", ref["assetId"], owner,
+                        )
+                    ):
+                        raise PermissionError("batch_image_reference_forbidden")
+                    if str((asset_row[1] or {}).get("type") or "图片") != "图片":
+                        raise ValueError("batch_image_reference_invalid")
+
+                asset_id = "generated-" + hashlib.sha256(
+                    f"{owner}:{request['jobId']}:asset".encode("utf-8")
+                ).hexdigest()[:32]
+                item = {
+                    "id": internal_id,
+                    "jobId": request["jobId"],
+                    "ownerId": owner,
+                    "productionId": request["productionId"],
+                    "accountId": request["accountId"],
+                    "itemIndex": request["itemIndex"],
+                    "operationKey": request["operationKey"],
+                    "requestFingerprint": request["requestFingerprint"],
+                    "request": {key: value for key, value in request.items() if key not in {"internalId"}},
+                    "assetId": asset_id,
+                    "status": "queued",
+                    "progress": 0,
+                    "error": "",
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+                _ensure_doc_resource_scope_locked(
+                    conn,
+                    BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                    item,
+                    actor_id=owner,
+                    owner_id=owner,
+                )
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                    (
+                        BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                        internal_id,
+                        owner,
+                        now,
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+                results.append((_batch_image_generation_job_public(item), True))
+            conn.commit()
+            return results
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def claim_batch_image_generation_job(owner_id, client_job_id):
+    owner = str(owner_id or "").strip()
+    internal_id = _batch_image_generation_job_id(owner, client_job_id)
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (BATCH_IMAGE_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                conn.commit()
+                return None, False
+            item = json.loads(row[1])
+            if str(item.get("status") or "") != "queued":
+                conn.commit()
+                return item, False
+            item.update({
+                "status": "running",
+                "progress": 0.05,
+                "startedAt": now,
+                "updatedAt": now,
+            })
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                (
+                    now,
+                    json.dumps(item, ensure_ascii=False),
+                    BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                ),
+            )
+            conn.commit()
+            return item, True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def batch_image_generation_reference_assets(owner_id, client_job_id):
+    owner = str(owner_id or "").strip()
+    internal_id = _batch_image_generation_job_id(owner, client_job_id)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (BATCH_IMAGE_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                return []
+            item = json.loads(row[1])
+            result = []
+            for ref in ((item.get("request") or {}).get("refs") or [])[:8]:
+                asset_id = str((ref or {}).get("assetId") or "")
+                asset_row = _doc_row_in_conn(conn, "assets", asset_id)
+                if not asset_row or not _resource_scope_allows_actor_locked(
+                    conn, "assets", asset_id, owner,
+                ):
+                    raise PermissionError("batch_image_reference_forbidden")
+                result.append({**dict(ref), "asset": dict(asset_row[1])})
+            return result
+        finally:
+            conn.close()
+
+
+def finish_batch_image_generation_job(
+    owner_id,
+    client_job_id,
+    *,
+    status,
+    asset=None,
+    result=None,
+    error="",
+):
+    """Commit asset, production binding, and terminal job state together."""
+    owner = str(owner_id or "").strip()
+    internal_id = _batch_image_generation_job_id(owner, client_job_id)
+    terminal = str(status or "").strip()
+    if terminal not in {"succeeded", "failed", "confirming"}:
+        raise ValueError("invalid_batch_image_generation_job_status")
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (BATCH_IMAGE_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                conn.commit()
+                return None
+            item = json.loads(row[1])
+            if str(item.get("status") or "") == "succeeded":
+                conn.commit()
+                return _batch_image_generation_job_public(item)
+            payload = result if isinstance(result, dict) else {}
+            if terminal == "succeeded":
+                if not isinstance(asset, dict) or str(asset.get("id") or "") != str(item.get("assetId") or ""):
+                    raise ValueError("batch_image_generation_asset_conflict")
+                canonical_asset = dict(asset)
+                canonical_asset["ownerId"] = owner
+                canonical_asset["accountId"] = str(item.get("accountId") or "")
+                _upsert_docs_in_conn(conn, "assets", [canonical_asset], actor_id=owner)
+
+                production_row = _doc_row_in_conn(conn, "productions", item.get("productionId"))
+                if not production_row or _stored_owner(production_row) != owner:
+                    raise PermissionError("forbidden")
+                production = dict(production_row[1])
+                artifacts = dict(production.get("artifacts") or {})
+                images = dict(artifacts.get("images") or {})
+                image_items = [dict(value) if isinstance(value, dict) else value for value in (images.get("items") or [])]
+                index = int(item.get("itemIndex") or 0)
+                if index >= len(image_items) or not isinstance(image_items[index], dict):
+                    raise ValueError("batch_image_generation_item_missing")
+                image_item = image_items[index]
+                if str(image_item.get("operationKey") or "") != str(item.get("operationKey") or ""):
+                    raise ValueError("batch_image_generation_operation_conflict")
+                image_item.update({
+                    "assetId": canonical_asset["id"],
+                    "generationJobId": item.get("jobId"),
+                    "referenceReceipt": payload.get("referenceReceipt"),
+                    "status": "done",
+                    "error": "",
+                    "confirmation": None,
+                    "updatedAt": now,
+                })
+                image_items[index] = image_item
+                images["items"] = image_items
+                artifacts["images"] = images
+                production["artifacts"] = artifacts
+                production["updatedAt"] = now
+                _upsert_docs_in_conn(conn, "productions", [production], actor_id=owner)
+                item["asset"] = canonical_asset
+                for key in (
+                    "usedRefs", "skippedRefs", "referenceReceipt",
+                    "model", "mode", "billing",
+                ):
+                    if key in payload:
+                        item[key] = payload[key]
+
+            item.update({
+                "status": terminal,
+                "progress": 1 if terminal in {"succeeded", "failed"} else 0.95,
+                "error": str(error or "")[:600] if terminal != "succeeded" else "",
+                "finishedAt": now if terminal in {"succeeded", "failed"} else 0,
+                "updatedAt": now,
+            })
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                (
+                    now,
+                    json.dumps(item, ensure_ascii=False),
+                    BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                ),
+            )
+            conn.commit()
+            return _batch_image_generation_job_public(item)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def get_batch_image_generation_job(owner_id, client_job_id, *, stale_ms=20 * 60 * 1000):
+    owner = str(owner_id or "").strip()
+    internal_id = _batch_image_generation_job_id(owner, client_job_id)
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (BATCH_IMAGE_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                return None
+            item = json.loads(row[1])
+            if (
+                str(item.get("status") or "") == "running"
+                and now - int(item.get("updatedAt") or item.get("startedAt") or now) >= int(stale_ms)
+            ):
+                item.update({
+                    "status": "confirming",
+                    "progress": 0.95,
+                    "error": "服务重启时该请求可能已到达图片供应商；系统不会自动重发，请人工确认后再重试。",
+                    "updatedAt": now,
+                })
+                conn.execute(
+                    "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                    (
+                        now,
+                        json.dumps(item, ensure_ascii=False),
+                        BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                        internal_id,
+                    ),
+                )
+                conn.commit()
+            return _batch_image_generation_job_public(item)
+        finally:
+            conn.close()
+
+
+def recover_batch_image_generation_jobs():
+    """Return safe queued work and quarantine interrupted provider attempts."""
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id,owner_id,data FROM docs WHERE collection=?",
+                (BATCH_IMAGE_GENERATION_JOB_COLLECTION,),
+            ).fetchall()
+            queued = []
+            for internal_id, owner_id, raw in rows:
+                item = json.loads(raw)
+                status = str(item.get("status") or "")
+                if status == "queued":
+                    queued.append(item)
+                    continue
+                if status != "running":
+                    continue
+                item.update({
+                    "status": "confirming",
+                    "progress": 0.95,
+                    "error": "服务重启时该请求可能已到达图片供应商；系统不会自动重发，请人工确认后再重试。",
+                    "updatedAt": now,
+                })
+                conn.execute(
+                    "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                    (
+                        now,
+                        json.dumps(item, ensure_ascii=False),
+                        BATCH_IMAGE_GENERATION_JOB_COLLECTION,
+                        str(internal_id),
+                    ),
+                )
+            conn.commit()
+            return queued
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def create_custom_canvas_generation_job(

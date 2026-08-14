@@ -33,6 +33,7 @@ import math
 import weakref
 import secrets
 import unicodedata
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
@@ -217,9 +218,93 @@ async def _bounded_submit_slot(queue):
             queue.release()
 
 
-def _image_submit_queue():
-    queue = _loop_submit_queue(_IMAGE_SUBMIT_QUEUES, IMAGE_SUBMIT_CONCURRENCY)
-    return _bounded_submit_slot(queue)
+class _FairImageSubmitQueue:
+    """Round-robin provider admission across member/surface queues."""
+
+    def __init__(self, limit: int):
+        self.limit = max(1, int(limit))
+        self.active = 0
+        self.waiters = {}
+        self.rotation = deque()
+
+    def _dispatch(self):
+        while self.active < self.limit and self.rotation:
+            key = self.rotation.popleft()
+            queue = self.waiters.get(key)
+            if not queue:
+                self.waiters.pop(key, None)
+                continue
+            ticket = queue.popleft()
+            if queue:
+                self.rotation.append(key)
+            else:
+                self.waiters.pop(key, None)
+            if ticket["future"].cancelled():
+                continue
+            ticket["granted"] = True
+            self.active += 1
+            ticket["future"].set_result(True)
+
+    async def acquire(self, key: str):
+        loop = asyncio.get_running_loop()
+        normalized = str(key or "anonymous:main")[:180]
+        ticket = {"future": loop.create_future(), "granted": False}
+        queue = self.waiters.get(normalized)
+        if queue is None:
+            queue = deque()
+            self.waiters[normalized] = queue
+            self.rotation.append(normalized)
+        queue.append(ticket)
+        self._dispatch()
+        try:
+            await ticket["future"]
+        except BaseException:
+            if ticket["granted"]:
+                self.release()
+            else:
+                pending = self.waiters.get(normalized)
+                if pending:
+                    try:
+                        pending.remove(ticket)
+                    except ValueError:
+                        pass
+                    if not pending:
+                        self.waiters.pop(normalized, None)
+                        self.rotation = deque(item for item in self.rotation if item != normalized)
+                self._dispatch()
+            raise
+
+    def release(self):
+        if self.active > 0:
+            self.active -= 1
+        self._dispatch()
+
+
+def _image_submit_fair_key(attempt_ledger=None) -> str:
+    member_id = str(getattr(attempt_ledger, "member", {}).get("id") or "anonymous")
+    surface = str(getattr(attempt_ledger, "surface", "main") or "main")
+    return f"{member_id}:{surface}"
+
+
+@asynccontextmanager
+async def _fair_image_submit_slot(queue, key: str):
+    acquired = False
+    try:
+        await queue.acquire(key)
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            queue.release()
+
+
+def _image_submit_queue(attempt_ledger=None):
+    loop = asyncio.get_running_loop()
+    queue = _IMAGE_SUBMIT_QUEUES.get(loop)
+    if queue is None:
+        queue = _FairImageSubmitQueue(IMAGE_SUBMIT_CONCURRENCY)
+        _IMAGE_SUBMIT_QUEUES[loop] = queue
+    return _fair_image_submit_slot(queue, _image_submit_fair_key(attempt_ledger))
 
 
 def _video_submit_queue():
@@ -509,6 +594,7 @@ async def _app_startup():
     await _prime_production_write_gate()
     try:
         await _start_model_usage_completion_spool_reconciler()
+        await _start_batch_image_generation_recovery()
     except BaseException:
         # The reconciler start is currently side-effect-light and idempotent,
         # but keep cleanup explicit if that contract ever changes.
@@ -521,6 +607,7 @@ async def _app_shutdown():
     """Stop the reconciler exactly once and revoke the process-local gate."""
 
     try:
+        await _stop_batch_image_generation_tasks()
         await _stop_model_usage_completion_spool_reconciler()
     finally:
         _clear_production_write_gate()
@@ -1142,6 +1229,29 @@ class ImageGenerateReq(BaseModel):
     idempotencyKey: str = ""
 
 
+class BatchImageGenerationRef(BaseModel):
+    assetId: str
+    role: str = "shared"
+    name: str = ""
+
+
+class BatchImageGenerationJobReq(BaseModel):
+    clientJobId: str
+    productionId: str
+    accountId: str
+    itemIndex: int = Field(ge=0, le=47)
+    operationKey: str
+    requestFingerprint: str
+    prompt: str
+    refs: List[BatchImageGenerationRef] = Field(default_factory=list)
+    ratio: str = "3:4"
+    assetName: str = ""
+
+
+class BatchImageGenerationJobsReq(BaseModel):
+    jobs: List[BatchImageGenerationJobReq]
+
+
 class ImageReferencePlanCard(BaseModel):
     index: int
     title: str = ""
@@ -1750,7 +1860,7 @@ async def _post_json_with_retry(
     last_data = None
     for attempt in range(retries + 1):
         try:
-            async with _image_submit_queue():
+            async with _image_submit_queue(attempt_ledger):
                 # Queue admission is explicitly not a provider attempt. Open
                 # the durable usage receipt only after a slot is acquired and
                 # immediately before the network call.
@@ -1804,7 +1914,7 @@ async def _post_image_form_with_retry(
     last_response = None
     for attempt in range(retries + 1):
         try:
-            async with _image_submit_queue():
+            async with _image_submit_queue(attempt_ledger):
                 attempt_receipt = (
                     await attempt_ledger.acquire()
                     if attempt_ledger is not None
@@ -2058,7 +2168,7 @@ def llm_config(_me=Depends(require_creator)):
 
 
 class _ModelUsageGateFailure(HTTPException):
-    """A durable usage intent could not authorize an upstream model call."""
+    """An operation identity conflict makes an upstream replay unsafe."""
 
 
 def _model_usage_provider_name(endpoint: str, fallback: str) -> str:
@@ -2083,11 +2193,12 @@ def _begin_model_usage_call(
     surface: str = "infinite-canvas",
     source: str = "custom-canvas",
 ) -> dict:
-    """Durably authorize exactly one provider call before any network access.
+    """Open an operational idempotency receipt before provider access.
 
-    This gate is independent of points billing. In particular, an unlimited
-    allowance must not turn a replayed canvas request into a second paid model
-    call. Any receipt write failure therefore fails closed.
+    The same receipt feeds usage telemetry, but telemetry persistence is not
+    an authorization boundary. Storage failure degrades accounting only;
+    exact request conflicts and confirmed duplicate operations still fail
+    closed because they represent a real duplicate-provider-call risk.
     """
     raw_key = str(idempotency_key or "").strip()
     stable_key = _quota_operation_key(operation, raw_key)
@@ -2119,9 +2230,23 @@ def _begin_model_usage_call(
             f"{exc.__class__.__name__}: {str(exc)[:200]}",
             file=sys.stderr,
         )
-        raise _ModelUsageGateFailure(503, "模型用量凭证落盘失败，本次未调用上游") from exc
+        return {
+            "receiptId": "",
+            "shouldCallProvider": True,
+            "telemetryPending": True,
+            "operationId": stable_key,
+        }
     if not isinstance(receipt, dict) or not receipt.get("receiptId"):
-        raise _ModelUsageGateFailure(503, "模型用量凭证回包不完整，本次未调用上游")
+        print(
+            f"[model-usage] begin returned no receipt: {operation}; provider call continues",
+            file=sys.stderr,
+        )
+        return {
+            "receiptId": "",
+            "shouldCallProvider": True,
+            "telemetryPending": True,
+            "operationId": stable_key,
+        }
     if not receipt.get("shouldCallProvider"):
         raise _ModelUsageGateFailure(409, "该模型任务已存在或正在处理，已拒绝重复调用上游")
     return receipt
@@ -2571,44 +2696,22 @@ def _quota_begin(
     provided_key: str = "",
     request_fingerprint: str = "",
 ) -> dict:
-    key = _quota_operation_key(namespace, provided_key)
-    reservation, error = store.reserve_generation_points(
-        member.get("id"),
-        int(points),
-        feature=feature,
-        idempotency_key=key,
-        request_fingerprint=request_fingerprint,
-    )
-    if error == "insufficient_points":
-        remaining = int((reservation or {}).get("remaining") or 0)
-        period = str((reservation or {}).get("period") or "")
-        label = "今日免费积分" if period == "day" else "套餐积分"
-        raise HTTPException(
-            402,
-            f"{label}不足：需要 {int(points)} 点，当前可用 {remaining} 点",
-        )
-    if error == "idempotency_conflict":
-        raise HTTPException(409, "幂等键已用于不同的生成请求")
-    if error == "idempotency_key_required":
-        raise HTTPException(400, "生成请求必须提供 Idempotency-Key")
-    if error in {
-        "billing_scope_not_configured",
-        "team_plan_not_configured",
-        "member_not_found",
-    }:
-        raise HTTPException(403, "当前账号尚未配置可用的生成积分")
-    if error or not reservation:
-        raise HTTPException(500, f"生成任务积分预占失败：{error or 'unknown'}")
-    if reservation.get("bypassed"):
-        return reservation
-    if reservation.get("status") == "settled":
-        raise HTTPException(409, "该幂等任务已结算，为避免重复调用上游已拒绝重放")
-    if reservation.get("status") == "active" and reservation.get("reused"):
-        raise HTTPException(409, "该幂等任务正在进行，请勿重复提交")
-    if reservation.get("status") != "active":
-        raise HTTPException(409, "该幂等任务状态不允许重新调用上游")
-    reservation["bypassed"] = False
-    return reservation
+    # v143.4: usage is observational telemetry, never an authorization gate.
+    # Provider idempotency and uncertain-result protection live in the durable
+    # model-operation receipt, not in a points reservation table.
+    return {
+        "reservationId": "",
+        "status": "usage-only",
+        "points": int(points),
+        "deducted": 0,
+        "bypassed": True,
+        "billingType": "usage-only",
+        "billingScope": None,
+        "quota": None,
+        "feature": str(feature or ""),
+        "operationKey": _quota_operation_key(namespace, provided_key),
+        "requestFingerprint": str(request_fingerprint or ""),
+    }
 
 
 def _quota_release_safely(member, reservation):
@@ -3141,6 +3244,27 @@ async def qianfan_topic_ideas(
         operation=operation,
     )
     result["billing"] = _quota_billing_public(settlement)
+    try:
+        await asyncio.to_thread(
+            store.record_api_usage,
+            _me.get("id"),
+            _me.get("name") or "成员",
+            "topic",
+            "百度搜索 AI 选题",
+            LLM_MODEL,
+            len(result.get("items") or []),
+            "条",
+            event_id="topic-" + hashlib.sha256(
+                f"{_me.get('id')}:{request_key}".encode("utf-8")
+            ).hexdigest()[:40],
+        )
+    except Exception as exc:
+        # Usage telemetry is intentionally downstream of the successful
+        # business result and can never turn a generated preview into failure.
+        print(
+            f"[usage] topic projection pending: {exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
     return result
 
 
@@ -4059,6 +4183,320 @@ async def image_generate(
     )
     billing = _quota_billing_public(settlement)
     return {**result, "billing": billing, "dailyQuota": billing["dailyQuota"]}
+
+
+_BATCH_IMAGE_GENERATION_TASKS = {}
+
+
+def _batch_image_job_payload(req: BatchImageGenerationJobReq) -> dict:
+    if hasattr(req, "model_dump"):
+        return req.model_dump()
+    return req.dict()
+
+
+def _batch_image_result_unknown(error: BaseException) -> bool:
+    if isinstance(error, asyncio.CancelledError):
+        return True
+    detail = getattr(error, "detail", None)
+    if isinstance(detail, dict):
+        return str(detail.get("code") or "") == "IMAGE_PROVIDER_RESULT_UNKNOWN"
+    return bool(getattr(error, "outcomeUnknown", False))
+
+
+def _batch_image_reference_models(owner_id: str, job_id: str) -> List[ImageRef]:
+    resolved = store.batch_image_generation_reference_assets(owner_id, job_id)
+    refs = []
+    for index, row in enumerate(resolved[:8]):
+        asset = row.get("asset") if isinstance(row, dict) else {}
+        asset = asset if isinstance(asset, dict) else {}
+        data_url = str(asset.get("dataUrl") or "").strip()
+        mime = str(asset.get("mime") or "image/png").split(";", 1)[0]
+        if not data_url.startswith("data:image/"):
+            stored = str(asset.get("serverFileName") or "").strip()
+            if not stored:
+                raw_url = str(asset.get("fileUrl") or asset.get("url") or "")
+                path = urlparse(raw_url).path
+                if path.startswith("/api/files/"):
+                    stored = Path(path[len("/api/files/"):]).name
+            path = _upload_path(stored) if stored else None
+            if not path or not path.is_file():
+                raise HTTPException(409, f"第 {index + 1} 张参考图文件不存在，请重新上传")
+            blob = path.read_bytes()
+            if not _looks_like_image_blob(blob):
+                raise HTTPException(400, f"第 {index + 1} 张参考图不是可识别图片")
+            mime = (mime if mime.startswith("image/") else mimetypes.guess_type(path.name)[0]) or "image/png"
+            data_url = _image_ref_to_data_url(blob, mime)
+        refs.append(ImageRef(
+            id=str(row.get("assetId") or ""),
+            role=str(row.get("role") or "shared"),
+            name=str(row.get("name") or asset.get("name") or f"reference_{index + 1}"),
+            mime=mime,
+            dataUrl=data_url,
+        ))
+    return refs
+
+
+def _persist_batch_generated_asset(member: dict, job: dict, generated: dict) -> dict:
+    data_url = str((generated or {}).get("dataUrl") or "")
+    if not data_url.startswith("data:image/"):
+        raise HTTPException(502, "图片供应商已返回，但结果不是可持久化图片")
+    asset_id = str(job.get("assetId") or "")
+    request_data = job.get("request") if isinstance(job.get("request"), dict) else {}
+    filename, blob, mime = _data_url_to_file(data_url, f"{asset_id}.png")
+    if not blob or not _looks_like_image_blob(blob):
+        raise HTTPException(502, "图片供应商已返回，但图片文件校验失败")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stem = _safe_file_stem(f"{member['id']}--{asset_id}")
+    stored = stem + _safe_ext(filename, mime)
+    path = _upload_path(stored)
+    temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+    registration = None
+    try:
+        temporary.write_bytes(blob)
+        registration = _register_private_media(
+            "upload",
+            stored,
+            member,
+            provenance_kind="batch-image-generation",
+            provenance_id=str(job.get("jobId") or ""),
+        )
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        if registration and registration.get("created"):
+            try:
+                store.unregister_private_media("upload", stored, member["id"])
+            except Exception:
+                pass
+        raise
+    now = int(time.time() * 1000)
+    return {
+        "id": asset_id,
+        "accountId": str(job.get("accountId") or ""),
+        "productionId": str(job.get("productionId") or ""),
+        "ownerId": str(member.get("id") or ""),
+        "name": str(request_data.get("assetName") or f"站内笔记图{int(job.get('itemIndex') or 0) + 1:02d}"),
+        "type": "图片",
+        "tags": ["笔记图", "站内生成", "发布前精修"],
+        "createdAt": now,
+        "updatedAt": now,
+        "blobUpdatedAt": now,
+        "hasBlob": True,
+        "mime": mime,
+        "size": len(blob),
+        "contentHash": "sha256-" + hashlib.sha256(blob).hexdigest(),
+        "fileUrl": "/api/files/" + stored,
+        "url": "/api/files/" + stored,
+        "serverFileName": stored,
+        "storage": "server",
+        "fileMissing": False,
+        "processed": "server-provider-normalization-v1",
+    }
+
+
+async def _run_batch_image_generation_job(owner_id: str, job_id: str):
+    job = None
+    provider_succeeded = False
+    try:
+        job, claimed = await asyncio.to_thread(
+            store.claim_batch_image_generation_job, owner_id, job_id,
+        )
+        if not job or not claimed:
+            return
+        member_row = await asyncio.to_thread(store.get_member, owner_id)
+        if not member_row:
+            raise HTTPException(403, "任务所属成员不存在")
+        member = await asyncio.to_thread(store.member_public, member_row)
+        request_data = job.get("request") if isinstance(job.get("request"), dict) else {}
+        refs = await asyncio.to_thread(_batch_image_reference_models, owner_id, job_id)
+        image_request = ImageGenerateReq(
+            prompt=str(request_data.get("prompt") or ""),
+            refs=refs,
+            ratio=str(request_data.get("ratio") or "3:4"),
+            strictRatio=True,
+            idempotencyKey=str(job.get("operationKey") or ""),
+        )
+        _api_key, endpoint, _edit_endpoint = _image_request_config(image_request)
+        model = _image_model_for_request(image_request.model, endpoint)
+        attempts = _main_provider_attempts(
+            member,
+            feature="批量生产图片生成",
+            usage_kind="image",
+            operation="batch.image.generate",
+            request_value=image_request,
+            idempotency_key=str(job.get("operationKey") or ""),
+            provider=_model_usage_provider_name(endpoint, "image-provider"),
+            model=model,
+            surface="batch-creation",
+        )
+
+        async def operation():
+            return await _image_generate_impl(
+                image_request, member, attempt_ledger=attempts,
+            )
+
+        generated, settlement = await _run_personal_billable(
+            member,
+            points=IMAGE_GENERATION_POINTS,
+            feature="批量生产图片生成",
+            namespace="batch.image.generate",
+            idempotency_key=str(job.get("operationKey") or ""),
+            request_fingerprint=str(job.get("requestFingerprint") or ""),
+            operation=operation,
+        )
+        provider_succeeded = True
+        asset = await asyncio.to_thread(
+            _persist_batch_generated_asset, member, job, generated,
+        )
+        result = {
+            **generated,
+            "billing": _quota_billing_public(settlement),
+        }
+        last_error = None
+        for retry_index in range(3):
+            try:
+                await asyncio.to_thread(
+                    store.finish_batch_image_generation_job,
+                    owner_id,
+                    job_id,
+                    status="succeeded",
+                    asset=asset,
+                    result=result,
+                )
+                return
+            except (sqlite3.OperationalError, OSError) as exc:
+                last_error = exc
+                if retry_index < 2:
+                    await asyncio.sleep(0.25 * (retry_index + 1))
+        if last_error:
+            raise last_error
+    except asyncio.CancelledError as exc:
+        if job:
+            await asyncio.to_thread(
+                store.finish_batch_image_generation_job,
+                owner_id,
+                job_id,
+                status="confirming",
+                error="任务进程停止时供应商结果尚未确认；系统不会自动重发。",
+            )
+        raise
+    except BaseException as exc:
+        if job:
+            confirming = provider_succeeded or _batch_image_result_unknown(exc)
+            try:
+                await asyncio.to_thread(
+                    store.finish_batch_image_generation_job,
+                    owner_id,
+                    job_id,
+                    status="confirming" if confirming else "failed",
+                    error=(
+                        "图片结果已返回但本地落盘待确认；系统不会重复调用供应商。"
+                        if provider_succeeded
+                        else str(getattr(exc, "detail", None) or exc)
+                    ),
+                )
+            except Exception as finish_error:
+                print(
+                    f"[batch-image] terminal persistence failed: {job_id} "
+                    f"{finish_error.__class__.__name__}: {str(finish_error)[:200]}",
+                    file=sys.stderr,
+                )
+        if not isinstance(exc, asyncio.CancelledError):
+            print(
+                f"[batch-image] job failed: {job_id} "
+                f"{exc.__class__.__name__}: {str(exc)[:240]}",
+                file=sys.stderr,
+            )
+
+
+def _start_batch_image_generation_task(owner_id: str, job_id: str):
+    key = f"{owner_id}:{job_id}"
+    existing = _BATCH_IMAGE_GENERATION_TASKS.get(key)
+    if existing and not existing.done():
+        return existing
+    task = asyncio.create_task(
+        _run_batch_image_generation_job(str(owner_id), str(job_id)),
+        name=f"batch-image-{str(job_id)[:80]}",
+    )
+    _BATCH_IMAGE_GENERATION_TASKS[key] = task
+
+    def cleanup(done_task):
+        if _BATCH_IMAGE_GENERATION_TASKS.get(key) is done_task:
+            _BATCH_IMAGE_GENERATION_TASKS.pop(key, None)
+
+    task.add_done_callback(cleanup)
+    return task
+
+
+async def _start_batch_image_generation_recovery():
+    if runtime_config.is_read_only():
+        return
+    try:
+        queued = await asyncio.to_thread(store.recover_batch_image_generation_jobs)
+    except store.StoreNotReadyError as exc:
+        # Startup write-readiness is owned by the production gate above.  A
+        # recovery scan is operational follow-up and must not take an otherwise
+        # healthy service socket down when a legacy probe or temporary DB
+        # contention makes that scan unavailable.
+        print(
+            f"[batch-image] startup recovery deferred: {exc}",
+            file=sys.stderr,
+        )
+        return
+    for item in queued:
+        _start_batch_image_generation_task(
+            str(item.get("ownerId") or ""), str(item.get("jobId") or ""),
+        )
+
+
+async def _stop_batch_image_generation_tasks():
+    tasks = [task for task in _BATCH_IMAGE_GENERATION_TASKS.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _BATCH_IMAGE_GENERATION_TASKS.clear()
+
+
+@app.post("/api/batch-image/generation-jobs")
+async def batch_image_generation_jobs_create(
+    req: BatchImageGenerationJobsReq,
+    me=Depends(require_creator),
+):
+    if not 1 <= len(req.jobs) <= 48:
+        raise HTTPException(400, "每次可登记 1 至 48 个批量图片任务")
+    try:
+        registered = await asyncio.to_thread(
+            store.create_batch_image_generation_jobs,
+            me["id"],
+            [_batch_image_job_payload(item) for item in req.jobs],
+        )
+    except PermissionError:
+        raise HTTPException(403, "批量图片任务或参考图不属于当前账号")
+    except ValueError as exc:
+        message = str(exc)
+        if message == "batch_image_generation_job_conflict":
+            raise HTTPException(409, "任务编号已用于不同的图片请求")
+        raise HTTPException(400, f"批量图片任务参数有误：{message}")
+    for job, _created in registered:
+        if str(job.get("status") or "") == "queued":
+            _start_batch_image_generation_task(me["id"], job.get("jobId"))
+    return {"ok": True, "jobs": [job for job, _created in registered]}
+
+
+@app.get("/api/batch-image/generation-jobs/{job_id}")
+async def batch_image_generation_job_get(job_id: str, me=Depends(require_creator)):
+    try:
+        job = await asyncio.to_thread(
+            store.get_batch_image_generation_job, me["id"], job_id,
+        )
+    except ValueError:
+        raise HTTPException(400, "批量图片任务编号有误")
+    if not job:
+        raise HTTPException(404, "批量图片任务不存在")
+    if str(job.get("status") or "") == "queued":
+        _start_batch_image_generation_task(me["id"], job_id)
+    return {"ok": True, "job": job}
 
 
 # ---------- 视频生成代理：Seedance ----------
@@ -9025,14 +9463,14 @@ def community_post_delete(post_id: str, me=Depends(require_member)):
 
 @app.get("/api/admin/llm-usage")
 def admin_llm_usage(days: int = 7, _me=Depends(require_admin)):
-    """管理员真实模型调用账本：语言 Token 与图片/视频调用分开展示。"""
+    """管理员真实功能用量：语言/语音按次，图片按张，视频按个，选题按条。"""
     window_days = 30 if int(days or 7) == 30 else 7
     since_ms = int(time.time() * 1000) - window_days * 24 * 60 * 60 * 1000
     return {
         "rows": store.model_usage_summary(since_ms=since_ms),
         "days": window_days,
         "kind": "verified_model_usage",
-        "note": "语言仅统计上游返回的 Token；图片和视频仅记录实际成功调用，不估算历史消耗。",
+        "note": "语言与语音按成功调用次数；图片按张、视频按个、AI 选题按最终返回条数；Token 仅作明细证据。",
     }
 
 
@@ -9045,7 +9483,7 @@ def admin_llm_usage_details(memberId: str = "", days: int = 7, _me=Depends(requi
         **store.model_usage_details(member_id=memberId, since_ms=since_ms),
         "days": window_days,
         "kind": "verified_model_usage",
-        "note": "图片和视频是成功调用/输出单位，不是 Token；历史未记录调用不会估算补写。",
+        "note": "明细按功能、模型和调用面展示；历史未记录调用不会估算补写。",
     }
 
 
@@ -12749,7 +13187,7 @@ def _video_workshop_usage_completion_matches(central: dict, completion: dict) ->
 
 
 def _require_video_workshop_usage_ready(me, project_id: str):
-    """Block a new sidecar mutation when historical usage evidence is unsafe."""
+    """Observe sidecar audit health without authorizing or blocking creation."""
 
     project_root = Path(os.getenv(
         "VIDEO_WORKSHOP_PROJECTS_DIR",
@@ -12762,16 +13200,17 @@ def _require_video_workshop_usage_ready(me, project_id: str):
             member_id=str((me or {}).get("id") or "").strip(),
         )
     except Exception as exc:
-        raise HTTPException(
-            503, "视频工坊用量审计暂不可用，未发起新调用"
-        ) from exc
+        print(
+            f"[model-usage] video-workshop readiness unavailable: "
+            f"{exc.__class__.__name__}: {str(exc)[:180]}",
+            file=sys.stderr,
+        )
+        return {"ok": False, "warning": "usage-readiness-unavailable"}
     if not status.get("ok"):
-        raise HTTPException(
-            409,
-            {
-                "code": "video_workshop_usage_pending",
-                "message": "视频工坊历史用量证据待处理，未发起新调用",
-            },
+        print(
+            f"[model-usage] video-workshop evidence pending; creation continues: "
+            f"project={str(project_id)[:80]}",
+            file=sys.stderr,
         )
     return status
 
@@ -13000,14 +13439,7 @@ def _sync_video_workshop_project(me, source):
 def _static_video_reservation(me, request: Request, payload: dict) -> Optional[dict]:
     if str(payload.get("creationMode") or "").strip().lower() != "static":
         return None
-    quota = store.generation_quota(me.get("id")) or {}
-    remaining = quota.get("remaining")
     point_limit = STATIC_VIDEO_MAX_RESERVATION_POINTS
-    if remaining is not None:
-        point_limit = min(point_limit, max(0, int(remaining or 0)))
-    if point_limit <= 0:
-        label = "今日免费积分" if str(quota.get("period") or "") == "day" else "套餐积分"
-        raise HTTPException(402, f"{label}不足，当前可用 0 点")
     provided_key = str(
         payload.get("idempotencyKey")
         or request.headers.get("Idempotency-Key")

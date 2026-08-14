@@ -13,5 +13,7 @@ from fastapi.testclient import TestClient as _FastAPITestClient
 
 class TestClient(_FastAPITestClient):
     def close(self) -> None:
-        self.adapters.clear()
+        adapters = getattr(self, "adapters", None)
+        if adapters is not None:
+            adapters.clear()
         super().close()

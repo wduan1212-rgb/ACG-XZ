@@ -518,7 +518,7 @@ class SubscriptionQuotaTest(unittest.TestCase):
         self.assertIsNone(conflict)
         self.assertEqual("idempotency_conflict", error)
 
-    def test_external_team_endpoint_settles_success_and_releases_provider_failure(self):
+    def test_external_team_endpoint_is_usage_only_for_success_and_failure(self):
         owner, _member, team_id = self._customer_team("team")
         headers = {
             "Authorization": f"Bearer {store.make_token(owner[0])}",
@@ -546,11 +546,11 @@ class SubscriptionQuotaTest(unittest.TestCase):
             )
         self.assertEqual(200, response.status_code, response.text)
         billing = response.json()["billing"]
-        self.assertFalse(billing["bypassed"])
-        self.assertEqual("subscription", billing["billingType"])
-        self.assertEqual({"type": "team", "id": team_id}, billing["billingScope"])
-        self.assertEqual(5, billing["deductedPoints"])
-        self.assertEqual(5, observations[0]["reserved"])
+        self.assertTrue(billing["bypassed"])
+        self.assertEqual("usage-only", billing["billingType"])
+        self.assertIsNone(billing["billingScope"])
+        self.assertEqual(0, billing["deductedPoints"])
+        self.assertEqual(0, observations[0]["reserved"])
 
         async def failure(_req, _member, **_kwargs):
             raise HTTPException(502, "mock provider failed")
@@ -563,7 +563,7 @@ class SubscriptionQuotaTest(unittest.TestCase):
             )
         self.assertEqual(502, failed.status_code)
         quota = store.generation_quota(owner[0])
-        self.assertEqual(5, quota["used"])
+        self.assertEqual(0, quota["used"])
         self.assertEqual(0, quota["reserved"])
 
 
@@ -605,7 +605,7 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         store._initialized = self.previous_initialized
         self.temp.cleanup()
 
-    def test_main_image_reserves_before_call_settles_success_and_blocks_replay(self):
+    def test_main_image_is_usage_only_and_never_mutates_points_wallet(self):
         observations = []
 
         async def generated(_req, member, **_kwargs):
@@ -630,14 +630,15 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
                 "/api/image/generate", json={"prompt": "生成测试图"}, headers=headers,
             )
         self.assertEqual(200, first.status_code, first.text)
-        self.assertEqual(409, replay.status_code)
-        self.assertEqual(1, mocked.call_count)
-        self.assertEqual(main.IMAGE_GENERATION_POINTS, observations[0]["reserved"])
+        self.assertEqual(200, replay.status_code, replay.text)
+        self.assertEqual(2, mocked.call_count)
+        self.assertEqual(0, observations[0]["reserved"])
         self.assertEqual(0, observations[0]["used"])
-        self.assertEqual(main.IMAGE_GENERATION_POINTS, first.json()["dailyQuota"]["used"])
-        self.assertEqual("settled", first.json()["billing"]["status"])
+        self.assertIsNone(first.json()["dailyQuota"])
+        self.assertEqual(0, first.json()["billing"]["deductedPoints"])
+        self.assertEqual("usage-only", first.json()["billing"]["status"])
 
-    def test_free_language_dialogue_reserves_then_deducts_real_points(self):
+    def test_language_dialogue_records_usage_without_points_reservation(self):
         observations = []
 
         async def llm_success(_body, _auth="", _force=True, *, attempt_ledger=None):
@@ -660,11 +661,12 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
                 headers=headers,
             )
         self.assertEqual(200, response.status_code, response.text)
-        self.assertEqual(main.LLM_GENERATION_POINTS, observations[0]["reserved"])
+        self.assertEqual(0, observations[0]["reserved"])
         self.assertEqual(0, observations[0]["used"])
-        self.assertEqual(main.LLM_GENERATION_POINTS, response.json()["billing"]["deductedPoints"])
+        self.assertEqual(0, response.json()["billing"]["deductedPoints"])
+        self.assertEqual("usage-only", response.json()["billing"]["status"])
         quota = store.personal_daily_quota(self.user[0])
-        self.assertEqual(main.LLM_GENERATION_POINTS, quota["used"])
+        self.assertEqual(0, quota["used"])
         self.assertEqual(0, quota["reserved"])
 
     def test_free_language_failure_releases_points(self):
@@ -700,7 +702,7 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual(0, quota["reserved"])
         self.assertEqual(0, quota["used"])
 
-    def test_insufficient_points_rejects_before_provider_call(self):
+    def test_exhausted_legacy_points_do_not_block_provider_call(self):
         quota, error = store.deduct_personal_daily_points(
             self.user[0], 70, "测试用尽", "fill-daily-wallet",
         )
@@ -713,10 +715,11 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
                 json={"prompt": "不应调用上游", "idempotencyKey": "no-balance"},
                 headers=self.headers,
             )
-        self.assertEqual(402, response.status_code)
-        mocked.assert_not_awaited()
+        self.assertEqual(200, response.status_code, response.text)
+        mocked.assert_awaited_once()
+        self.assertEqual("usage-only", response.json()["billing"]["status"])
 
-    def test_personal_generation_requires_key_and_binds_it_to_request(self):
+    def test_points_layer_does_not_require_or_bind_an_idempotency_key(self):
         mocked = AsyncMock(side_effect=HTTPException(502, "mock provider failed"))
         with patch.object(main, "_image_generate_impl", new=mocked):
             missing = self.client.post(
@@ -734,10 +737,10 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
                 json={"prompt": "换了内容", "idempotencyKey": "bound-image"},
                 headers=self.headers,
             )
-        self.assertEqual(400, missing.status_code)
+        self.assertEqual(502, missing.status_code)
         self.assertEqual(502, first.status_code)
-        self.assertEqual(409, changed.status_code)
-        self.assertEqual(1, mocked.await_count)
+        self.assertEqual(502, changed.status_code)
+        self.assertEqual(3, mocked.await_count)
         quota = store.personal_daily_quota(self.user[0])
         self.assertEqual(0, quota["reserved"])
         self.assertEqual(0, quota["used"])
@@ -783,12 +786,11 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual(200, tts.status_code, tts.text)
         self.assertEqual(200, design.status_code, design.text)
         self.assertEqual(2, main.TTS_POINTS_PER_100_CHARS)
-        self.assertEqual(6, tts.json()["billing"]["deductedPoints"])
-        self.assertEqual(main.VOICE_DESIGN_POINTS, design.json()["billing"]["deductedPoints"])
-        self.assertEqual(
-            6 + main.VOICE_DESIGN_POINTS,
-            store.subscription_monthly_quota(self.user[0])["used"],
-        )
+        self.assertEqual(0, tts.json()["billing"]["deductedPoints"])
+        self.assertEqual(0, design.json()["billing"]["deductedPoints"])
+        self.assertEqual("usage-only", tts.json()["billing"]["status"])
+        self.assertEqual("usage-only", design.json()["billing"]["status"])
+        self.assertEqual(0, store.subscription_monthly_quota(self.user[0])["used"])
 
     def test_canvas_multi_image_settles_before_blob_put_and_put_is_zero_charge(self):
         async def generated(_prompt, _size, _refs, **_kwargs):
@@ -816,8 +818,9 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         data = response.json()
         self.assertEqual(2, len(data["images"]))
-        self.assertEqual(10, data["billing"]["deductedPoints"])
-        self.assertEqual(10, store.personal_daily_quota(self.user[0])["used"])
+        self.assertEqual(0, data["billing"]["deductedPoints"])
+        self.assertEqual("usage-only", data["billing"]["status"])
+        self.assertEqual(0, store.personal_daily_quota(self.user[0])["used"])
 
         image = data["images"][0]
         payload = {
@@ -835,7 +838,7 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual(200, second_put.status_code, second_put.text)
         self.assertEqual(0, first_put.json()["billing"]["deductedPoints"])
         self.assertTrue(first_put.json()["billing"]["settledAtGeneration"])
-        self.assertEqual(10, store.personal_daily_quota(self.user[0])["used"])
+        self.assertEqual(0, store.personal_daily_quota(self.user[0])["used"])
 
     def test_canvas_receipt_failure_rolls_back_settlement_and_releases(self):
         generated = {
@@ -951,17 +954,12 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
             )
         for response in (enhance, transform, region):
             self.assertEqual(200, response.status_code, response.text)
-            self.assertEqual(
-                main.CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
-                response.json()["billing"]["deductedPoints"],
-            )
+            self.assertEqual(0, response.json()["billing"]["deductedPoints"])
+            self.assertEqual("usage-only", response.json()["billing"]["status"])
         self.assertTrue(enhance.json()["images"][0]["generationReceipt"])
         self.assertTrue(transform.json()["image"]["generationReceipt"])
         self.assertTrue(region.json()["image"]["generationReceipt"])
-        self.assertEqual(
-            3 * main.CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
-            store.personal_daily_quota(self.user[0])["used"],
-        )
+        self.assertEqual(0, store.personal_daily_quota(self.user[0])["used"])
 
     def test_team_image_generation_is_explicitly_unlimited_bypass(self):
         team_member = store.add_member(

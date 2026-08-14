@@ -229,21 +229,20 @@ class VideoWorkshopUsageReconciliationTest(unittest.TestCase):
         self.assertEqual(1, response["_usageReconciliation"]["pending"])
         self.assertEqual(0, response["_usageReconciliation"]["reconciled"])
 
-    def test_usage_gate_returns_machine_code_without_rewriting_evidence(self):
+    def test_usage_readiness_is_observability_only_and_never_blocks_creation(self):
         with patch.object(
             store,
             "video_workshop_usage_readiness",
             return_value={"ok": False, "effectivePendingRows": 1},
         ) as readiness:
-            with self.assertRaises(HTTPException) as raised:
-                main._require_video_workshop_usage_ready(
-                    self._member(self.owner), "workshop-usage-1"
-                )
+            status = main._require_video_workshop_usage_ready(
+                self._member(self.owner), "workshop-usage-1"
+            )
 
-        self.assertEqual(409, raised.exception.status_code)
+        self.assertFalse(status["ok"])
         self.assertEqual(
-            "video_workshop_usage_pending",
-            raised.exception.detail["code"],
+            1,
+            status["effectivePendingRows"],
         )
         readiness.assert_called_once()
 

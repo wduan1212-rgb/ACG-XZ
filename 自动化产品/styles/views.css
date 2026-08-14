@@ -3388,12 +3388,12 @@ body.workspace-shell-v2[data-zone="settings"] .view-root[data-settings-view="pro
 .api-usage-table { overflow: visible; }
 .api-usage-empty { min-height: 76px; display: flex; align-items: center; padding: 12px 2px; }
 .api-usage-overview { display: grid; gap: 11px; }
-.api-usage-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.api-usage-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 .api-usage-kpi { display: grid; gap: 3px; min-width: 0; padding: 11px 12px; border: 1px solid var(--hairline); border-radius: 10px; background: linear-gradient(135deg, #fff, #f7f9ff); }
 .api-usage-kpi b { color: var(--brand-deep); font-size: 18px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .api-usage-kpi em, .api-usage-row-stat em { color: var(--faint); font-size: 10px; font-style: normal; white-space: nowrap; }
 .api-usage-summary-list { overflow: hidden; border: 1px solid var(--hairline); border-radius: 10px; background: #fff; }
-.api-usage-summary-label, .api-usage-summary-row { display: grid; grid-template-columns: minmax(150px, 1.25fr) repeat(4, minmax(104px, .75fr)) 34px; gap: 9px; align-items: center; min-width: 0; }
+.api-usage-summary-label, .api-usage-summary-row { display: grid; grid-template-columns: minmax(140px, 1.2fr) repeat(5, minmax(82px, .72fr)) 34px; gap: 8px; align-items: center; min-width: 0; }
 .api-usage-summary-label { padding: 8px 12px; color: var(--faint); background: #f8faff; font-size: 10px; font-weight: 700; }
 .api-usage-summary-label > :not(:first-child), .api-usage-row-stat { text-align: right; }
 .api-usage-summary-row { min-height: 58px; padding: 8px 12px; border-top: 1px solid var(--hairline); transition: background .16s ease; }
@@ -3454,7 +3454,7 @@ body.workspace-shell-v2[data-zone="settings"] .view-root[data-settings-view="pro
   .creator-profile-actions { align-items: flex-start; flex-direction: column; }
   .api-usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .api-usage-summary-label { display: none; }
-  .api-usage-summary-row { grid-template-columns: minmax(112px, 1fr) repeat(4, auto) 30px; gap: 7px; padding-inline: 9px; }
+  .api-usage-summary-row { grid-template-columns: minmax(100px, 1fr) repeat(5, auto) 30px; gap: 6px; padding-inline: 9px; }
   .api-usage-row-stat b { font-size: 12px; }
   .api-usage-row-stat em { max-width: 54px; overflow: hidden; text-overflow: ellipsis; }
   .product-library-grid { grid-template-columns: 1fr; }

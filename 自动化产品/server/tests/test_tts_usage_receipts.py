@@ -115,7 +115,7 @@ class TtsUsageReceiptTest(unittest.TestCase):
         self.assertEqual(["failed", "succeeded"], statuses)
         self.assertEqual(1, sum(item["calls"] for item in details["receiptEvents"]))
 
-    def test_receipt_write_failure_prevents_provider(self):
+    def test_receipt_write_failure_does_not_block_provider(self):
         with patch.object(main, "MINIMAX_API_KEY", "test-key"), patch.object(
             store,
             "begin_model_usage_receipt",
@@ -123,10 +123,9 @@ class TtsUsageReceiptTest(unittest.TestCase):
         ), patch.object(
             main, "_minimax_tts_request", new=AsyncMock(return_value=successful_tts())
         ) as mocked:
-            with self.assertRaises(HTTPException) as denied:
-                self.run_generate()
-        self.assertEqual(503, denied.exception.status_code)
-        self.assertEqual(0, mocked.await_count)
+            result = self.run_generate()
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, mocked.await_count)
 
     def test_network_uncertainty_stays_visible_without_fake_output(self):
         # The production service is deliberately pinned to Pydantic v1.  Use

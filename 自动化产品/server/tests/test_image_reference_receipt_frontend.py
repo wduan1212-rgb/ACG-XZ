@@ -251,7 +251,7 @@ class ImageReferenceReceiptFrontendTest(unittest.TestCase):
         self.assertIn("fresh.referenceReceipt = out.output?.referenceReceipt", boards)
         self.assertIn("strictRatio: true", boards)
         self.assertIn("参考图实际使用 ${used}/${intended}", boards)
-        self.assertIn("it.referenceReceipt = out.output?.referenceReceipt", orchestrator)
+        self.assertIn("item.referenceReceipt = job.referenceReceipt || null", orchestrator)
         self.assertIn("j.referenceReceipt = r.referenceReceipt || r.output?.referenceReceipt", jobs)
 
     def test_single_and_batch_send_selected_asset_content_with_intent_ids(self):

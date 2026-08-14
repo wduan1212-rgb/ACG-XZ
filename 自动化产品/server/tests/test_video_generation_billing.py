@@ -90,11 +90,11 @@ class VideoGenerationBillingTest(unittest.TestCase):
         self.assertEqual("9:16", payload["ratio"] if "ratio" in payload else payload["metadata"]["ratio"])
         self.assertTrue(payload["generate_audio"] if "generate_audio" in payload else payload["metadata"]["generate_audio"])
 
-    def test_submit_reserves_idempotently_and_success_poll_settles(self):
+    def test_submit_is_idempotent_and_success_poll_remains_usage_only(self):
         response, upstream = self._submit("success-key", "provider-success")
         self.assertEqual(300, response["billing"]["requestedPoints"])
         quota = store.generation_quota(self.user_row[0])
-        self.assertEqual(300, quota["reserved"])
+        self.assertEqual(0, quota["reserved"])
         self.assertEqual(0, quota["used"])
 
         with patch.object(main, "_video_submit_upstream", AsyncMock()) as replay:
@@ -115,11 +115,11 @@ class VideoGenerationBillingTest(unittest.TestCase):
             completed = asyncio.run(main.video_poll(
                 "provider-success", _me=self.member,
             ))
-        self.assertEqual("settled", completed["billing"]["status"])
-        self.assertEqual(300, completed["billing"]["deductedPoints"])
+        self.assertEqual("usage-only", completed["billing"]["status"])
+        self.assertEqual(0, completed["billing"]["deductedPoints"])
         quota = store.generation_quota(self.user_row[0])
         self.assertEqual(0, quota["reserved"])
-        self.assertEqual(300, quota["used"])
+        self.assertEqual(0, quota["used"])
 
         # Terminal polling is served from SQLite after a process-style re-init.
         store._initialized = False
@@ -128,7 +128,7 @@ class VideoGenerationBillingTest(unittest.TestCase):
         ))
         self.assertEqual(completed, replayed)
 
-    def test_failure_and_cancel_release_points_without_cross_member_access(self):
+    def test_failure_and_cancel_are_usage_only_without_cross_member_access(self):
         self._submit("failed-key", "provider-failed")
         with patch.object(main, "_video_poll_upstream", AsyncMock(return_value={
             "ok": True,
@@ -140,7 +140,7 @@ class VideoGenerationBillingTest(unittest.TestCase):
             failed = asyncio.run(main.video_poll(
                 "provider-failed", _me=self.member,
             ))
-        self.assertEqual("released", failed["billing"]["status"])
+        self.assertEqual("usage-only", failed["billing"]["status"])
         self.assertEqual(0, store.generation_quota(self.user_row[0])["reserved"])
 
         self._submit("cancel-key", "provider-cancel")
@@ -157,14 +157,14 @@ class VideoGenerationBillingTest(unittest.TestCase):
                 "provider-cancel", _me=self.member,
             ))
         self.assertEqual("cancelled", cancelled["status"])
-        self.assertEqual("released", cancelled["billing"]["status"])
+        self.assertEqual("usage-only", cancelled["billing"]["status"])
         repeated = asyncio.run(main.video_cancel(
             "provider-cancel", _me=self.member,
         ))
         self.assertTrue(repeated["reused"])
         self.assertEqual(1, cancel_upstream.await_count)
 
-    def test_provider_cancel_failure_keeps_reservation_and_daily_user_is_guarded(self):
+    def test_provider_cancel_failure_and_daily_users_never_hit_points_gate(self):
         self._submit("cancel-error", "provider-cancel-error")
         with patch.object(
             main,
@@ -175,19 +175,20 @@ class VideoGenerationBillingTest(unittest.TestCase):
                 asyncio.run(main.video_cancel(
                     "provider-cancel-error", _me=self.member,
                 ))
-        self.assertEqual(300, store.generation_quota(self.user_row[0])["reserved"])
+        self.assertEqual(0, store.generation_quota(self.user_row[0])["reserved"])
 
         ordinary = store.member_public(store.get_member(self.other_row[0]))
-        upstream = AsyncMock()
+        upstream = AsyncMock(return_value={
+            "ok": True, "provider": "seedance", "providerRef": "provider-daily-standard",
+        })
         with patch.object(main, "_video_submit_upstream", upstream):
-            with self.assertRaises(HTTPException) as insufficient:
-                asyncio.run(main.video_submit(
-                    self._request(duration=4),
-                    idempotency_key="ordinary-standard",
-                    _me=ordinary,
-                ))
-        self.assertEqual(402, insufficient.exception.status_code)
-        upstream.assert_not_awaited()
+            standard = asyncio.run(main.video_submit(
+                self._request(duration=4),
+                idempotency_key="ordinary-standard",
+                _me=ordinary,
+            ))
+        self.assertEqual("usage-only", standard["billing"]["status"])
+        upstream.assert_awaited_once()
         quota = store.generation_quota(self.other_row[0])
         self.assertEqual(70, quota["remaining"])
         self.assertEqual(0, quota["reserved"])
@@ -204,7 +205,7 @@ class VideoGenerationBillingTest(unittest.TestCase):
                 _me=ordinary,
             ))
         self.assertEqual(64, affordable["billing"]["requestedPoints"])
-        self.assertEqual(64, store.generation_quota(self.other_row[0])["reserved"])
+        self.assertEqual(0, store.generation_quota(self.other_row[0])["reserved"])
         with patch.object(
             main, "_video_cancel_upstream", AsyncMock(return_value={"ok": True}),
         ):

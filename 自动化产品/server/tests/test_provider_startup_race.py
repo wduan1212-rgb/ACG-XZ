@@ -20,7 +20,6 @@ class ProviderStartupRaceTests(unittest.TestCase):
 
         for function_name in (
             "generateBatchImagesInHouse",
-            "regenerateBatchImage",
             "generateCreativeVideoStoryboards",
             "generateStaticFrames",
         ):
@@ -31,6 +30,9 @@ class ProviderStartupRaceTests(unittest.TestCase):
                 function_body,
                 f"{function_name} must not race the async image config probe",
             )
+        regenerate_body = orchestrator.split("function regenerateBatchImage", 1)[1]
+        regenerate_body = regenerate_body.split("\n}", 1)[0]
+        self.assertIn("await generateBatchImagesInHouse(p, batch, acc)", regenerate_body)
 
         self.assertNotIn(
             'if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法执行站内生图")',

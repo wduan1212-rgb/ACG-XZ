@@ -34,7 +34,7 @@ class FakeClient:
 
 
 @asynccontextmanager
-async def open_queue():
+async def open_queue(*_args, **_kwargs):
     yield
 
 
@@ -193,7 +193,7 @@ class MainProviderUsageReceiptTest(unittest.TestCase):
         client = FakeClient([FakeResponse(200, {"data": [{"url": "ok"}]})])
 
         @asynccontextmanager
-        async def busy_queue():
+        async def busy_queue(*_args, **_kwargs):
             raise main.HTTPException(
                 503,
                 detail={

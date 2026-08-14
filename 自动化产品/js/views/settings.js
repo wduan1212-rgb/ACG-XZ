@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260814-v1433-batch-partial-recovery-1";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260814-v1434-durable-batch-jobs-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260814-v1433-batch-partial-recovery-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260814-v1434-durable-batch-jobs-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -241,34 +241,38 @@ export const settingsView = {
       if (!apiUsageLoaded) return `<div class="muted api-usage-empty">正在读取用量...</div>`;
       if (!apiUsageRows.length) return `<div class="muted api-usage-empty">暂未收到已记录的模型调用。历史图片、视频调用若当时没有服务端账本，无法可靠追溯或估算。</div>`;
       const activeRows = apiUsageRows
-        .filter(row => Number(row.calls || 0) || Number(row.imageCalls || 0) || Number(row.videoCalls || 0) || Number(row.voiceCalls || 0))
-        .sort((a, b) => (Number(b.totalTokens || 0) + Number(b.calls || 0) + Number(b.imageCalls || 0) + Number(b.videoCalls || 0) + Number(b.voiceCalls || 0)) - (Number(a.totalTokens || 0) + Number(a.calls || 0) + Number(a.imageCalls || 0) + Number(a.videoCalls || 0) + Number(a.voiceCalls || 0)));
+        .filter(row => Number(row.calls || 0) || Number(row.topicOutputs || 0) || Number(row.imageCalls || 0) || Number(row.videoCalls || 0) || Number(row.voiceCalls || 0))
+        .sort((a, b) => (Number(b.calls || 0) + Number(b.topicOutputs || 0) + Number(b.imageOutputs || 0) + Number(b.videoOutputs || 0) + Number(b.voiceCalls || 0)) - (Number(a.calls || 0) + Number(a.topicOutputs || 0) + Number(a.imageOutputs || 0) + Number(a.videoOutputs || 0) + Number(a.voiceCalls || 0)));
       const quietRows = apiUsageRows.filter(row => !activeRows.includes(row));
       const totals = apiUsageRows.reduce((sum, row) => ({
         tokens: sum.tokens + Number(row.totalTokens || 0),
+        languageCalls: sum.languageCalls + Number(row.calls || 0),
         tokenUnknownCalls: sum.tokenUnknownCalls + Number(row.tokenUnknownCalls || 0),
+        topicOutputs: sum.topicOutputs + Number(row.topicOutputs || 0),
         imageOutputs: sum.imageOutputs + Number(row.imageOutputs || 0),
         videoOutputs: sum.videoOutputs + Number(row.videoOutputs || 0),
-        voiceOutputs: sum.voiceOutputs + Number(row.voiceOutputs || 0),
-      }), { tokens: 0, tokenUnknownCalls: 0, imageOutputs: 0, videoOutputs: 0, voiceOutputs: 0 });
+        voiceCalls: sum.voiceCalls + Number(row.voiceCalls || 0),
+      }), { tokens: 0, languageCalls: 0, tokenUnknownCalls: 0, topicOutputs: 0, imageOutputs: 0, videoOutputs: 0, voiceCalls: 0 });
       const memberRow = row => `<article class="api-usage-summary-row">
         <span class="api-usage-member"><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span>
-        <span class="api-usage-row-stat"><b>${usageNumber(row.totalTokens)}</b><em>语言 Token · ${usageNumber(row.calls)} 次${Number(row.tokenUnknownCalls || 0) ? ` · ${usageNumber(row.tokenUnknownCalls)} 次 Token 未知` : ""}</em></span>
-        <span class="api-usage-row-stat"><b>${usageNumber(row.imageOutputs)}</b><em>图片输出 · ${usageNumber(row.imageCalls)} 次</em></span>
-        <span class="api-usage-row-stat"><b>${usageNumber(row.videoOutputs)}</b><em>视频任务 · ${usageNumber(row.videoCalls)} 次</em></span>
-        <span class="api-usage-row-stat"><b>${usageNumber(row.voiceOutputs)}</b><em>语音输出 · ${usageNumber(row.voiceCalls)} 次</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.calls)}</b><em>语言调用${Number(row.totalTokens || 0) ? ` · ${usageNumber(row.totalTokens)} Token` : ""}</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.topicOutputs)}</b><em>AI 选题 · 按条</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.imageOutputs)}</b><em>图片 · 按张</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.videoOutputs)}</b><em>视频 · 按个</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.voiceCalls)}</b><em>语音 · 按次</em></span>
         <button class="icon-btn sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)}</button>
       </article>`;
       return `<div class="api-usage-overview">
         <div class="api-usage-kpis">
-          <span class="api-usage-kpi"><b>${usageNumber(totals.tokens)}</b><em>语言 Token${totals.tokenUnknownCalls ? ` · ${usageNumber(totals.tokenUnknownCalls)} 次未知` : ""}</em></span>
-          <span class="api-usage-kpi"><b>${usageNumber(totals.imageOutputs)}</b><em>图片输出</em></span>
-          <span class="api-usage-kpi"><b>${usageNumber(totals.videoOutputs)}</b><em>视频任务</em></span>
-          <span class="api-usage-kpi"><b>${usageNumber(totals.voiceOutputs)}</b><em>语音输出</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.languageCalls)}</b><em>语言调用 · 按次</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.topicOutputs)}</b><em>AI 选题 · 按条</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.imageOutputs)}</b><em>图片 · 按张</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.videoOutputs)}</b><em>视频 · 按个</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.voiceCalls)}</b><em>语音 · 按次</em></span>
           <span class="api-usage-kpi"><b>${usageNumber(activeRows.length)}</b><em>有用量成员</em></span>
         </div>
         <div class="api-usage-summary-list">
-          <div class="api-usage-summary-label"><span>创作者</span><span>语言模型</span><span>图片模型</span><span>视频模型</span><span>语音模型</span><span>明细</span></div>
+          <div class="api-usage-summary-label"><span>创作者</span><span>语言</span><span>AI 选题</span><span>图片</span><span>视频</span><span>语音</span><span>明细</span></div>
           ${activeRows.length ? activeRows.map(memberRow).join("") : `<div class="muted api-usage-empty">暂未产生用量；成员明细仍可从“查看 API 明细”中查看。</div>`}
         </div>
         ${quietRows.length ? `<details class="api-usage-zero-members"><summary>未产生用量的成员（${quietRows.length}）</summary><div class="api-usage-summary-list is-quiet">${quietRows.map(memberRow).join("")}</div></details>` : ""}

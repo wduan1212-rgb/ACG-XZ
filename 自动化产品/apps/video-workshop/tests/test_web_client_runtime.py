@@ -414,36 +414,36 @@ if (sent.attachments.length !== 1 || sent.message !== "创建一条测试视频"
 if (hooks.state.busy) throw new Error("busy remained locked after success");
 if (hooks.state.attachments.length !== 0) throw new Error("successful request did not clear its attachment queue");
 
-hooks.state.projectId = "project-with-pending-usage";
+hooks.state.projectId = "project-with-request-failure";
 hooks.state.project = {{
-  id: "project-with-pending-usage",
+  id: "project-with-request-failure",
   status: "succeeded",
   messages: [],
   events: [],
   outputs: [],
 }};
-const protectedConversationCalls = [];
+const failedConversationCalls = [];
 context.fetch = async (url, options) => {{
-  protectedConversationCalls.push({{ url, options }});
+  failedConversationCalls.push({{ url, options }});
   return {{
     ok: false,
-    status: 409,
+    status: 500,
     async json() {{
-      return {{ detail: {{ code: "video_workshop_usage_pending", message: "历史用量待处理" }} }};
+      return {{ detail: {{ message: "导演服务暂时不可用" }} }};
     }},
   }};
 }};
 await hooks.sendMessage("在原会话保留", false);
-if (protectedConversationCalls.map(item => item.url).join(",") !== "/api/chat") {{
-  throw new Error("pending usage unexpectedly created or retried another conversation");
+if (failedConversationCalls.map(item => item.url).join(",") !== "/api/chat") {{
+  throw new Error("failed request unexpectedly created or retried another conversation");
 }}
-if (hooks.state.projectId !== "project-with-pending-usage") {{
-  throw new Error("pending usage changed the active conversation");
+if (hooks.state.projectId !== "project-with-request-failure") {{
+  throw new Error("failed request changed the active conversation");
 }}
-if (!hooks.dom.toast.textContent.includes("可切换其他会话正常使用")) {{
-  throw new Error("same-conversation preservation was not explained to the user");
+if (!hooks.dom.toast.textContent.includes("导演服务暂时不可用")) {{
+  throw new Error("request failure was not explained to the user");
 }}
-if (hooks.state.busy) throw new Error("busy remained locked after preserving the current conversation");
+if (hooks.state.busy) throw new Error("busy remained locked after request failure");
 
 const freshAdded = await hooks.addFiles([{{ ...goodFile, name: "next-round.png" }}]);
 if (freshAdded !== 1 || hooks.state.attachments[0].label !== "图1") {{
@@ -504,7 +504,7 @@ console.log(JSON.stringify({{
   retryDraft: networkRetryDraft,
   restoredAttachments: networkRestoredAttachments,
   currentMessageLimit: filled + 2,
-  protectedConversationCalls: protectedConversationCalls.length,
+  failedConversationCalls: failedConversationCalls.length,
   nextRoundLabel: nextRoundAttachment.label,
   isolatedCount,
   syncFailureDraft: hooks.dom.startInput.value,
@@ -520,7 +520,7 @@ console.log(JSON.stringify({{
         self.assertEqual(result["retryDraft"], "失败后可重试")
         self.assertEqual(result["restoredAttachments"], 1)
         self.assertEqual(result["currentMessageLimit"], 8)
-        self.assertEqual(result["protectedConversationCalls"], 1)
+        self.assertEqual(result["failedConversationCalls"], 1)
         self.assertEqual(result["nextRoundLabel"], "图1")
         self.assertEqual(result["isolatedCount"], 1)
         self.assertEqual(result["syncFailureDraft"], "同步准备失败后可重试")
@@ -538,10 +538,10 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260814-v1433-batch-partial-recovery-1", index)
-        self.assertIn("styles.css?v=20260814-v1433-batch-partial-recovery-1", index)
+        self.assertIn("app.js?v=20260814-v1434-durable-batch-jobs-1", index)
+        self.assertIn("styles.css?v=20260814-v1434-durable-batch-jobs-1", index)
         self.assertIn(
-            'VIDEO_WORKSHOP_BUILD_ID = "20260814-v1433-batch-partial-recovery-1"',
+            'VIDEO_WORKSHOP_BUILD_ID = "20260814-v1434-durable-batch-jobs-1"',
             (ROOT / "app" / "main.py").read_text(encoding="utf-8"),
         )
         self.assertIn("projectAssetsButton", index)
@@ -556,9 +556,7 @@ console.log(JSON.stringify({{
         self.assertIn('chatSubmitButton.classList.toggle("is-stop", running)', source)
         self.assertIn('chatSubmitButton.dataset.runningStop = running ? "true" : "false"', source)
         self.assertIn('chatAttachmentButton.disabled = running', source)
-        self.assertIn('data?.detail?.code === "video_workshop_usage_pending"', source)
-        self.assertIn('"该旧会话仍在安全收口；已保留输入，可切换其他会话正常使用"', source)
-        self.assertIn('dom.toast.textContent.includes("安全收口")', source)
+        self.assertNotIn('video_workshop_usage_pending', source)
         self.assertIn('Number(reconciliation?.pending || 0) === 0', source)
         self.assertIn('Number(reconciliation?.conflicts || 0) === 0', source)
         self.assertNotIn('fetch("/api/projects"', source.split("async function sendMessage", 1)[1].split("async function retryProject", 1)[0])

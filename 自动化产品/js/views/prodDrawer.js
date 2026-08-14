@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260814-v1433-batch-partial-recovery-1";
-import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260814-v1433-batch-partial-recovery-1";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260814-v1434-durable-batch-jobs-1";
+import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260814-v1434-durable-batch-jobs-1";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
-import { deliver } from "../domain/delivery.js?v=20260814-v1433-batch-partial-recovery-1";
-import { maybeAdvanceAfterInput, regenerateBatchImage, regenerateCreativeStoryboard, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260814-v1433-batch-partial-recovery-1";
+import { deliver } from "../domain/delivery.js?v=20260814-v1434-durable-batch-jobs-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage, regenerateCreativeStoryboard, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260814-v1434-durable-batch-jobs-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 import { batchVideoEditor } from "../core/remote.js";
 

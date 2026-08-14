@@ -1,21 +1,22 @@
 /* 批次编排器：事件驱动的状态机（替代 v4 的 setInterval 盯进度）
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
-import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
+import { state, save, saveIncremental, persistRecoveredDocuments, cacheCanonicalDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260814-v1433-batch-partial-recovery-1";
+import { AI } from "../api/ai.js?v=20260814-v1434-durable-batch-jobs-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260814-v1433-batch-partial-recovery-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260814-v1433-batch-partial-recovery-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260814-v1434-durable-batch-jobs-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260814-v1434-durable-batch-jobs-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260814-v1433-batch-partial-recovery-1";
+import { deliver, productionImageAssetIssues } from "../domain/delivery.js?v=20260814-v1434-durable-batch-jobs-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { defaultTtsVoiceId, imageProviderReadyForSubmit, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260814-v1433-batch-partial-recovery-1";
+import { registerBatchImageJobs, waitForBatchImageJob } from "../api/batchImageJobs.js?v=20260814-v1434-durable-batch-jobs-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260814-v1434-durable-batch-jobs-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -2112,14 +2113,45 @@ function prepareExplicitBatchImageRetry(p) {
     item.status = "pending";
     item.error = "";
     item.confirmation = null;
+    item.generationJobId = "";
     prepared += 1;
   });
   return prepared;
 }
 
+async function applyBatchImageJobResult(p, item, job) {
+  const status = String(job?.status || "");
+  if (status === "succeeded" && job?.asset?.id) {
+    const asset = job.asset;
+    const index = state.assets.findIndex(row => row?.id === asset.id);
+    if (index >= 0) state.assets[index] = { ...state.assets[index], ...asset };
+    else state.assets.push(asset);
+    await cacheCanonicalDocuments("assets", asset);
+    item.assetId = asset.id;
+    item.generationJobId = String(job.jobId || item.generationJobId || "");
+    item.referenceReceipt = job.referenceReceipt || null;
+    item.status = "done";
+    item.error = "";
+    item.confirmation = null;
+    item.updatedAt = Number(job.updatedAt || Date.now());
+    return;
+  }
+  if (status === "confirming") {
+    item.status = "confirming";
+    item.error = "";
+    item.confirmation = {
+      operationKey: String(job?.operationKey || item.operationKey || ""),
+      status: "unknown",
+      checkedAt: Number(job?.updatedAt || Date.now()),
+    };
+    return;
+  }
+  item.status = status === "failed" ? "failed" : "loading";
+  item.error = status === "failed" ? String(job?.error || "图片生成失败") : "";
+}
+
 async function generateBatchImagesInHouse(p, batch, acc) {
-  const provider = await imageProviderReadyForSubmit();
-  const key = providerKeyFor("image", provider);
+  await imageProviderReadyForSubmit();
   const A = p.artifacts.images;
   const refGroups = imageRefGroupsFor(acc, batch, p);
   A.usedSharedRefAssetIds = refGroups.shared;
@@ -2132,7 +2164,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   const items = A.items || [];
   await ensureBatchImageReferencePlan(p, batch, acc, refGroups, defaultRefs);
   setStage(p, "images", "running");
-  await persistBatchProductionCheckpoint(p);
+  const jobs = [];
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it?.prompt) continue;
@@ -2174,69 +2206,46 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       ? await imageRefsForSelection(intendedRefAssetIds, refGroups)
       : defaultRefs;
     const operationKey = stableBatchImageOperationKey(p, it, i);
-    it.status = "loading";
+    it.generationJobId = operationKey;
+    it.status = "queued";
     it.error = "";
     it.referenceReceipt = null;
-    try {
-      await persistBatchProductionCheckpoint(p);
-    } catch (error) {
-      it.status = "pending";
-      throw error;
-    }
-    try {
-      const req = await provider.submit({
-        prompt: enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction),
-        refs,
-        intendedRefAssetIds,
-        ratio: "3:4",
-        apiKey: key?.secret,
-        endpoint: key?.provider,
-        model: key?.model || "",
-        idempotencyKey: operationKey,
-      });
-      const out = await provider.poll(req.providerRef);
-      it.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
-      if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第 ${i + 1} 张图片生成未返回结果`);
-      const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
-      const polished = await polishImageDataUrl(raw, `${p.id}-batch-${i}-${p.topic || ""}`);
-      const a = await addAssetFromDataUrl(acc.id, {
-        name: `站内笔记图${String(i + 1).padStart(2, "0")}_${(it.title || p.title || "").slice(0, 10)}`,
-        tags: ["笔记图", "站内生成", "发布前精修"],
-        dataUrl: polished,
-        forceNew: true,
-      });
-      it.assetId = a.id;
-      it.status = "done";
-      it.error = "";
-      it.confirmation = null;
-      await persistBatchProductionCheckpoint(p);
-    } catch (err) {
-      if (err?.checkpointPending) {
-        it.status = it.assetId ? "done" : "pending";
-      } else if (err?.outcomeUnknown || err?.code === "PROVIDER_RESULT_UNKNOWN") {
-        it.status = "confirming";
-        it.confirmation = {
-          operationKey,
-          status: err?.reconciliation?.status || "unknown",
-          checkedAt: Date.now(),
-        };
-      } else if (err?.newOperationRequired) {
-        it.status = "failed";
-      } else if (err?.retryable === true && err?.providerCalled === false) {
-        it.status = "pending";
-      } else {
-        it.status = "failed";
-      }
-      it.error = generationDeferred(err) ? "" : (err?.message || String(err));
-      if (err?.referenceReceipt) it.referenceReceipt = err.referenceReceipt;
-      // 一个图片调用的结果必须先独立落盘，才能继续派发下一张。除检查点本身
-      // 失败外，单图错误不再中断后续图片；最终由统一 settlement 标出待补项。
-      await persistBatchProductionCheckpoint(p);
-      if (err?.checkpointPending) throw err;
-      continue;
-    }
+    jobs.push({
+      clientJobId: operationKey,
+      productionId: p.id,
+      accountId: acc.id,
+      itemIndex: i,
+      operationKey,
+      prompt: enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction),
+      refs: refs.map(ref => ({ assetId: ref.id, role: ref.role, name: ref.name })),
+      ratio: "3:4",
+      assetName: `站内笔记图${String(i + 1).padStart(2, "0")}_${(it.title || p.title || "").slice(0, 10)}`,
+    });
   }
   if (!items.length) throw new Error("站内生图计划没有可执行图片");
+  if (!jobs.length) return batchImageSettlement(p);
+
+  // One durable checkpoint precedes one atomic server registration. The
+  // browser no longer owns provider execution and may safely close afterwards.
+  await persistBatchProductionCheckpoint(p);
+  await registerBatchImageJobs(jobs);
+  let pollingDeferred = false;
+  await Promise.all(jobs.map(async spec => {
+    const item = items[spec.itemIndex];
+    try {
+      const job = await waitForBatchImageJob(spec.clientJobId);
+      await applyBatchImageJobResult(p, item, job);
+    } catch (error) {
+      pollingDeferred = true;
+      item.status = "loading";
+      item.error = "";
+    }
+  }));
+  if (pollingDeferred) {
+    await cacheCanonicalDocuments("productions", p);
+    return { ...batchImageSettlement(p), deferred: true };
+  }
+  await persistBatchProductionCheckpoint(p);
   return batchImageSettlement(p);
 }
 
@@ -2247,68 +2256,16 @@ export async function regenerateBatchImage(p, imageIndex) {
   const batch = batchById(p.batchId);
   const acc = accountById(p.accountId);
   if (!batch || !acc) throw new Error("批次或账号不存在");
-  const provider = await imageProviderReadyForSubmit();
-  const key = providerKeyFor("image", provider);
-  const refGroups = imageRefGroupsFor(acc, batch, p);
-  const hasItemRefOverride = Object.prototype.hasOwnProperty.call(item, "refAssetIds");
-  const refs = hasItemRefOverride
-    ? await imageRefsForIds(Array.isArray(item.refAssetIds) ? item.refAssetIds.slice(0, 8) : [], "custom")
-    : [
-        ...(await imageRefsForIds(refGroups.shared, "shared")),
-        ...(await imageRefsForIds(refGroups.custom, "custom"))
-      ].slice(0, 8);
-  const intendedRefAssetIds = hasItemRefOverride
-    ? (Array.isArray(item.refAssetIds) ? item.refAssetIds.slice(0, 8) : [])
-    : refGroups.all;
-  item.status = "loading";
+  item.status = "pending";
   item.error = "";
   item.referenceReceipt = null;
+  item.confirmation = null;
   item.generationRevision = Math.max(0, Number(item.generationRevision || 0)) + 1;
   item.operationKey = `batch-image-${String(p.id)}-${Number(imageIndex) + 1}-revision-${item.generationRevision}`;
-  try {
-    await persistBatchProductionCheckpoint(p);
-    const req = await provider.submit({
-      prompt: enrichBatchImagePrompt(item.prompt, refs),
-      refs,
-      intendedRefAssetIds,
-      ratio: "3:4",
-      apiKey: key?.secret,
-      endpoint: key?.provider,
-      model: key?.model || "",
-      idempotencyKey: item.operationKey,
-    });
-    const out = await provider.poll(req.providerRef);
-    item.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
-    if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
-    const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
-    const polished = await polishImageDataUrl(raw, `${p.id}-batch-regen-${Number(imageIndex)}-${p.topic || ""}`);
-    if (item.assetId) await replaceAssetBlob(item.assetId, polished);
-    else {
-      const asset = await addAssetFromDataUrl(acc.id, {
-        name: `站内笔记图${String(Number(imageIndex) + 1).padStart(2, "0")}_${(item.title || p.title || "").slice(0, 10)}`,
-        tags: ["笔记图", "站内生成", "发布前精修"],
-        dataUrl: polished
-      });
-      item.assetId = asset.id;
-    }
-    item.status = "done";
-    item.error = "";
-    item.confirmation = null;
-    item.updatedAt = Date.now();
-    await persistBatchProductionCheckpoint(p);
-    return item;
-  } catch (err) {
-    if (generationDeferred(err)) {
-      item.status = err?.outcomeUnknown ? "confirming" : (item.assetId ? "done" : "pending");
-      item.error = "";
-    } else {
-      item.status = "failed";
-      item.error = err?.message || String(err);
-    }
-    if (err?.referenceReceipt) item.referenceReceipt = err.referenceReceipt;
-    save("productions");
-    throw err;
-  }
+  item.generationJobId = "";
+  await persistBatchProductionCheckpoint(p);
+  await generateBatchImagesInHouse(p, batch, acc);
+  return item;
 }
 
 async function runBatchImagesToReview(p, batch) {
@@ -2333,7 +2290,11 @@ async function runBatchImagesToReview(p, batch) {
         pendingIndexes: generated.pendingIndexes || [],
         updatedAt: Date.now(),
       };
-      await persistBatchProductionCheckpoint(p);
+      if (generated?.deferred) {
+        await cacheCanonicalDocuments("productions", p);
+      } else {
+        await persistBatchProductionCheckpoint(p);
+      }
       return false;
     }
     clearCompletedBatchImageErrors(p);
