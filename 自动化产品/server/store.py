@@ -20441,6 +20441,77 @@ def list_custom_video_project_ids(owner_id):
     ]
 
 
+def list_video_workshop_media_bindings():
+    """Return the unique server-owned project bindings used for media recovery.
+
+    The sidecar does not own tenant identity.  Recovery therefore starts from
+    the main database's existing custom-project mapping and refuses an
+    ambiguous workshop project instead of guessing an owner from a directory.
+    """
+
+    _ensure_db()
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            rows = conn.execute(
+                "SELECT id,owner_id,data FROM docs "
+                "WHERE collection='customProjects' ORDER BY id"
+            ).fetchall()
+            candidates = {}
+            for doc_id, owner_id, encoded in rows:
+                try:
+                    item = json.loads(encoded)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                state = (
+                    item.get("projectState")
+                    if isinstance(item.get("projectState"), dict)
+                    else {}
+                )
+                project_id = str(state.get("workshopProjectId") or "").strip()
+                owner = str(owner_id or "").strip()
+                if (
+                    item.get("kind") != "video"
+                    or state.get("integration") != "video-workshop"
+                    or not project_id
+                    or not owner
+                    or not _resource_scope_allows_actor_locked(
+                        conn, "customProjects", doc_id, owner,
+                    )
+                ):
+                    continue
+                scope = _member_resource_scope_locked(conn, owner)
+                binding = {
+                    "ownerId": owner,
+                    "teamId": (
+                        str(scope[1]) if scope and scope[0] == "team" else ""
+                    ),
+                    "projectId": project_id,
+                }
+                candidates.setdefault(project_id, set()).add(
+                    (binding["ownerId"], binding["teamId"])
+                )
+            conflicts = [
+                project_id
+                for project_id, owners in candidates.items()
+                if len(owners) != 1
+            ]
+            if conflicts:
+                raise StoreNotReadyError(
+                    "video workshop project ownership is ambiguous"
+                )
+            return [
+                {
+                    "projectId": project_id,
+                    "ownerId": next(iter(owners))[0],
+                    "teamId": next(iter(owners))[1],
+                }
+                for project_id, owners in sorted(candidates.items())
+            ]
+        finally:
+            conn.close()
+
+
 def sync_custom_video_project(owner_id, workshop_project):
     """把视频工坊的轻量项目/成片元数据映射到 owner-scoped 定制项目。
 

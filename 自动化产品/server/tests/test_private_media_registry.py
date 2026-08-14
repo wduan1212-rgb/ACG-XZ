@@ -739,19 +739,17 @@ class PrivateMediaRegistryTest(unittest.TestCase):
             self.assertTrue(second["reused"])
             self.assertEqual(before_second, logical_database_dump(store.DB_PATH))
 
-            # A subsequent sidecar hydration now performs the same owner-scoped
-            # registration for new regular files, without another settlement.
+            # The server-owned reconciler performs the same owner-scoped
+            # registration even when the browser never hydrates the project.
             new_output = output_dir / "delivery-114.mp4"
             new_output.write_bytes(b"video-114")
             main = importlib.import_module("main")
             with patch.object(main, "store", store), patch.object(
                 main, "VIDEO_WORKSHOP_OUTPUT_DIR", paths["VIDEO_WORKSHOP_OUTPUT_DIR"],
             ):
-                main._register_video_workshop_media(
-                    project,
-                    {"id": "owner-a", "teamId": "team-a"},
-                    project_id,
-                )
+                recovered = main._reconcile_video_workshop_media_registry()
+            self.assertGreaterEqual(recovered["projects"], 1)
+            self.assertGreaterEqual(recovered["files"], 1)
             self.assertEqual(0, store.private_media_registry_status()["counts"]["pendingRows"])
             access, access_error = store.private_media_access(
                 "video-output", f"{project_id}/delivery-114.mp4", "peer-a",

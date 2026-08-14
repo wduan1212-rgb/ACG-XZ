@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260814-v1434-durable-batch-jobs-1",
   "fileCount": 65,
-  "totalBytes": 3371258,
+  "totalBytes": 3377907,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 581934,
-      "sha256": "0442a77fb97a43d12dd0ed9f900c27f9bea11e3c522ccf06290aa23c873beb2e"
+      "size": 585887,
+      "sha256": "a89fdee953f61d806853279123218e7df9f3ec6c0f236397188ccb1e70c44d74"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -321,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 945203,
-      "sha256": "7667a89df43e97d5d7c1c5b842a1eaa658b53f16bb0e0a72f8a2db6b9b676b8d"
+      "size": 947899,
+      "sha256": "4163a9c1cad1494b11fadd6a9f299043280abc3a4c05b40fa6a61c5506fc9f63"
     },
     {
       "path": "tools/verify_release_contracts.py",
