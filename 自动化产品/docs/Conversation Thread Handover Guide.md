@@ -1,24 +1,21 @@
 # 星阵任务交接指南
 
-更新时间：2026-08-14
+更新时间：2026-08-15
 
 用途：当前 Codex 线程结束或需要转交工作时，按本文档整理真实状态并发送给用户指定的目标线程。交接必须让新线程快速获得“当前事实”，历史记录只按任务需要检索，不再默认全文读取。
 
 重要原则：不要在交接消息、文档、代码、提交信息里写入任何明文 API Key、服务器密码、公网 IP、私网 IP、token 或账号凭据。
 
-## 0. 2026-08-14 当前交接快照
+## 0. 2026-08-15 当前交接快照
 
-- 当前生产为 v143.3，功能提交 `644c5a4c914d2c0feced5e0701c0c52a06f5d05a`，隔离工作树 `/private/tmp/acg-v1433-batch-partial-recovery`，分支 `codex/v1433-batch-partial-recovery`，release/cache `20260814-v1433-batch-partial-recovery-1`，sibling release `20260814-v1433-batch-partial-recovery-1-644c5a4c`。main/sidecar 私有端口为 `8801/8776`；v143.2 main/sidecar/routing 仍 active/RW，是直接在线代码回滚点。
-- v143.3 把批量图文从“整组 shots JSON + 一张抛错中断账号”切成单图卡提示词、单图 operation/asset 和 production settlement。单卡 LLM 异常只用已确认文案安全组装；单图失败/unknown 不再阻止后续图和其他账号，用户明确重试只补缺失项。已完成/已交付会清理旧错误。
-- 无限画布原子整批和顺序执行未改；极端长条参考图的最长边限为 `4096`，先等比缩放再补到上游 `3:1` 边界，保留原图不裁剪且不再制造超大中间画布。
-- 本地与目标 Linux：主服务 `841 tests / OK / 1 approved skip`、sidecar `160/160`、Node `129/129`；批量+画布复杂专项五轮共 `805/805`；画布 typecheck/lint/build 全绿；Phase 0 `a6d7567cbb260c024136bed5e00799011e494307d85163d10e0d4403e8ab4dfb`。
-- 无流量真实验收为双用户异形图画布 `12/12`、耐久轮询 `492` 次无 job 丢失、四组图文 `12/12`、看图写文案 `2/2`、单卡提示词 `8/8`（一次 LLM 503 只回退当前卡）以及双用户 AI 选题 `8/8`。所有验收均单次提交，未知结果未自动重提。
-- 接流后只读观察到两位真实同学的三个图文任务分别 `2/2`、`2/2`、`7/7` 完成；最后一批从 `5/7` 继续推进到交付，失败、旧恢复错误和 error-level journal 均为 0。公网四入口 20 轮共 `80/80`，11 个首屏资源与发布包逐字节一致。
-- fresh SQLite 备份、逐字节 restore drill 和代码/路由/私密环境回滚集均已验签。切流后 readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，逐表与六类媒体无减少，总行数 `82,847→83,100`，新服务 `NRestarts=0`。
-- v143.2 已包含过期 `planDate` 修复和按回传日期区间导出 Excel；v143.3 累计包含这些能力，没有新增 schema、依赖或持久目录，也没有恢复用量配额门禁。
-- v143.5 本地候选 release/cache `20260815-v1435-ai-topic-partial-1`：AI 选题部分成功按账号保留到批次 session，可先填入已生成空白行，刷新后恢复，补生成只提交缺失账号并保护手工内容。最终全量主服务 `857`、sidecar `160`、Node `133`，真实 AI 选题 `8/8 + 5/5`，最终三用户批量图文 `3/3`+无限画布 `3/3`。当前仍未推送、未部署，生产仍为 v143.3。
-- v143.3 生产仍以 `IMAGE_SUBMIT_CONCURRENCY=2` 运行；image-2 账号总并发虽为 `10`，但同一密钥还被另一个产品使用。v143.4 本地候选已把批量图文做成 owner-scoped durable job/worker，并采用“最大 10、初始 6、繁忙收缩、持续成功缓慢恢复”的 owner/surface 自适应公平队列；HTTP 200 JSON 内的 `code:1002` 业务繁忙也会形成独立失败 receipt 后安全重试，不再直接变成用户任务失败。修复后真实三用户批量图文 `21/21`、无限画布 `12/12`，双异形参考图全部使用、unknown 为 0；资产页也已容忍部分 production。部署时 release 外私密环境应显式设置 `IMAGE_SUBMIT_CONCURRENCY=10` 与 `IMAGE_SUBMIT_INITIAL_CONCURRENCY=6`。当前仍未推送、未部署。
-- `/data` 约 99% 使用，旧 restore drills 是已识别的大型清理候选；它们属于恢复证据，未获明确批准不得删除。
+- 当前生产为 v143.5，功能提交 `c0385a58`，分支 `codex/v1434-durable-batch-jobs`，release/cache `20260815-v1435-ai-topic-partial-1`，sibling release `20260815-v1435-ai-topic-partial-1-c0385a58`。main/sidecar 私有端口为 `8803/8778`；v143.3 main/sidecar/routing 仍 active/RW，停止 v143.5 routing 即可回到在线旧代码而不替换新数据。
+- AI 选题已按账号保留部分结果：可先把成功标题/正文填入空白账号，刷新或重开仍恢复；补生成只提交缺失账号，不重跑成功项、不覆盖手工内容。查询词变化开启新一轮，移除账号只裁剪对应草稿；统计只按实际成功条数记录且不参与授权门禁。
+- v143.5 累计包含 v143.4 的 owner-scoped 批量图文耐久 job、失败项真实重试、图片全就绪结算，以及图片 provider `最大 10 / 初始 6`、繁忙收缩与成功恢复的 owner/surface 公平队列。无限画布保留独立耐久 batch/job 状态机，只共享受控 provider 容量。
+- 本地和目标 Linux 最终主服务 `857 tests / OK / 1 approved skip`、sidecar `160/160`、Node `133/133`；五轮复杂定向为 `455/455 + 20/20`。release verifier Phase 0 为 `c1a944785b370cf7a26088082b66d193d484d609a6125708e7372bee514f838b`，runtime 为 `65 files / 3,383,588 bytes / d1796c7bf4eefd281b744a0a57737684a047d33a1fcebba246822bd7cb3bf116`。
+- 服务器无流量隔离真实 provider 验收为 AI 选题 `8/8`、三用户批量图文 `3/3` 与无限画布 `3/3`；每个图片结果都使用两张异形/透明参考图，幂等重放、跨 owner `404` 和 unknown 0 通过。隔离验收进程已停止，没有写入生产账号或媒体。
+- fresh SQLite 保护点 `/data/dumate-studio/backups/v1435-pre-switch-20260814T164716Z`、逐字节 restore drill 和 `/data/dumate-studio/deployment-backups/v1435-pre-switch-20260814T170527Z` 代码/单元/路由/私密环境回滚集均已验签。发布只安装代码/静态；没有上传或覆盖 SQLite、账号、媒体、任务、认证、Nginx 或私密 provider 配置。
+- 切流后公网 root/health/OpenAPI 20 轮共 `60/60`，入口脚本与发布包逐字节一致；真实浏览器完整渲染 v143.5，只有游客态的预期 `401`。readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，总行数 `89,758→89,758`，逐表与六类媒体无减少，新服务 `NRestarts=0` 且无新增 critical/traceback/5xx journal。
+- `/data` 当前约 87% 使用、约 125G 可用。旧 restore drills 仍是恢复证据，未获明确批准不得删除；本次没有做清理。
 
 ## 1. 项目固定信息
 
@@ -26,7 +23,7 @@
 - 产品项目目录：`/Users/macbookpro/Desktop/obsidian/知识库/百度/codex自动化产品2/自动化产品`
 - Git 工作树根目录：`/Users/macbookpro/Desktop/obsidian/知识库/百度/codex自动化产品2`（历史仓库结构，不扩大产品范围）。
 - GitHub 仓库：`https://github.com/wduan1212-rgb/ACG-XZ.git`
-- 当前主开发/生产集成分支：`codex/v141-content-governance`
+- 当前主开发/生产集成分支：`codex/v1434-durable-batch-jobs`
 - 本地预览入口：`http://127.0.0.1:8787/`
 - 部署目标：百度智能云 BCC。
 - 敏感配置只允许保存在服务器环境变量或私密配置中，不得写入仓库、文档或聊天。

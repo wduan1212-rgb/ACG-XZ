@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v143.5 - 2026-08-15（本地候选：AI 选题部分结果持久化与缺项补生成）
+## v143.5 - 2026-08-15（生产：AI 选题部分结果持久化与缺项补生成）
+
+### 生产部署闭环
+
+- 生产流量运行功能提交 `c0385a58`，分支 `codex/v1434-durable-batch-jobs`，release/cache `20260815-v1435-ai-topic-partial-1`，实际 sibling release `20260815-v1435-ai-topic-partial-1-c0385a58`。新 main/sidecar 使用私有端口 `8803/8778`；v143.3 main/sidecar/routing 继续 active/RW，停止 `dumate-studio-v1435-routing.service` 即可回到仍在线的 v143.3 代码，不替换新业务数据。发布全程没有停服或转只读。
+- 生产只安装验签代码/静态 archive，SHA-256 为 `6697b0ab25d0322fc854954b12ed4b23f4a8a3fe818f428880ad1b77c71e1ecf`，共 `599` 个安全成员；SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 私密配置均未上传或覆盖。release 外环境在服务器继承并以 `0600` 保存，只更新 release/root/私有端口、release-bound readiness 与图片队列 `最大 10 / 初始 6`。
+- 目标 Linux 正确源码检出形状下主服务完成 `857 tests / OK / 1 approved skip`、sidecar `160/160`、Node 22.19 `133/133`。release verifier 通过 Phase 0 `c1a944785b370cf7a26088082b66d193d484d609a6125708e7372bee514f838b`、ESM `65 modules / 358 edges`、closure `dafbd4977cd46b9d644b8a4f8ecfe4fea2a15f907e72fbc20212214cc6f01247`、canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`、runtime `65 files / 3,383,588 bytes / d1796c7bf4eefd281b744a0a57737684a047d33a1fcebba246822bd7cb3bf116`。
+- 切流前 fresh SQLite v2 保护点为 `/data/dumate-studio/backups/v1435-pre-switch-20260814T164716Z`，manifest SHA-256 `70514510ec58c8d2e455de15dafc9eb3f95e6b9d282a093802492e0b8c90b164`，数据库 SHA-256 `376b7da619f39b72f00f894d2c87d4e4595825c85dc1ae61957efa4f2becf364`，逻辑 SHA-256 `0a21717bc7b319458fd84388ecac08dd12af0b571f3e754878431d194aeb455d`。逐字节一致 restore drill 通过 `quick_check=ok / 48 tables`；旧代码、单元、路由和私密环境回滚集位于 `/data/dumate-studio/deployment-backups/v1435-pre-switch-20260814T170527Z`。
+- 候选在隔离 SQLite/媒体和无生产流量端口完成服务器真实 provider 验收：AI 选题 `8/8`、三用户双异形/透明参考图批量图文 `3/3` 与无限画布 `3/3`，每个产物均 `usedRefs=2 / skippedRefs=0`，幂等重放、跨 owner `404` 和 `unknownOutcome=false` 通过。验收进程已停止，没有写入生产测试账号或媒体。
+- 切流后公网 root/health/OpenAPI 连续 20 轮共 `60/60`，入口 `main.js` 与发布包逐字节一致；真实浏览器加载 v143.5 完整 DOM，无横向溢出，只有游客态 `/api/members/me` 的预期 `401`。protected readiness 保持 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，新服务 `NRestarts=0`、无新增 critical/traceback/5xx journal；SQLite `quick_check=ok / 48 tables`、总行数 `89,758→89,758`，逐表和六类媒体文件/字节均无减少。
 
 ### 本版范围
 
@@ -9,13 +18,13 @@
 - “补生成缺失账号”只发送尚未成功或内容无效的账号；已成功账号不重跑、不重复消耗、不被新结果覆盖。查询词改变时明确开始新一轮，移除账号时只裁剪对应草稿。
 - 该修复不增加配额、用量或页面门禁；记账仍按实际成功条数投影，业务结果不被统计故障反向改成失败。
 
-### 验证与发布边界
+### 验证与生产结果
 
 - 五轮复杂定向回归主服务 `455/455`、Node `20/20`；最终全量主服务 `857 tests / OK / 1 approved skip`、sidecar `160/160`、Node `133/133`。
 - Playwright 真实页面流程复现 `4` 个账号先成功 `3`个：可先填入、手工标题不覆盖，刷新后仍保留 `3+1`，补生成的请求体精确只有 `1` 个缺失账号，最终 `4/4`、控制台错误 `0`。
 - 最终源码上的真实 provider 验收：AI 选题两组多账号 `8/8 + 5/5`；三用户异形/透明双参考图并发为批量图文 `3/3` 与无限画布 `3/3`，所有图均 `usedRefs=2 / skippedRefs=0`，幂等重放和跨 owner `404` 通过，`unknownOutcome=false`。
 - release/cache 为 `20260815-v1435-ai-topic-partial-1`。verifier：Phase 0 `c1a944785b370cf7a26088082b66d193d484d609a6125708e7372bee514f838b`；ESM `65 modules / 358 edges`，closure `dafbd4977cd46b9d644b8a4f8ecfe4fea2a15f907e72fbc20212214cc6f01247`；canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`；runtime `65 files / 3,383,588 bytes / d1796c7bf4eefd281b744a0a57737684a047d33a1fcebba246822bd7cb3bf116`。
-- 本节记录的是部署前候选证据；生产只允许代码/静态 sibling 绿色发布，不上传或覆盖 SQLite、账号、媒体、任务、认证和私密环境；切流前必须在服务器继续通过锁定测试、恢复演练、受保护 readiness 和无流量真实验收。
+- 上述候选证据已在目标 Linux、隔离真实 provider 和公网生产三层复验后以代码/静态 sibling 绿色发布；没有上传或覆盖 SQLite、账号、媒体、任务、认证和私密环境。
 
 ## v143.4 - 2026-08-14（本地候选：批量生图耐久调度、用量去门禁与创意视频切割）
 
@@ -24,7 +33,7 @@
 - v143.4 首次切流后，HTTP IP 非安全上下文中浏览器无 `crypto.subtle`，客户端在批量 job POST 前因计算 SHA-256 抛出 `Cannot read properties of undefined (reading 'digest')`。当时三条失败均未登记任何服务端 job，不是上游或并发失败。
 - 发现后立即停止 v143.4 routing，并在已提交的两个画布 job 自然收敛成功后停止 v143.4 main/sidecar。当前生产流量稳定运行 v143.3 main/sidecar/routing，全部为 RW、`NRestarts=0`；v143.4 三项服务全部 inactive，没有回灌或覆盖新业务数据。
 - 回滚后对 v143.3 实际图片上游只提交一轮：批量图文并发 `2/2`、无限画布并发 `2/2` 成功，每项都使用两张参考图，画布 Blob 持久可读，`unknownOutcome=false`。
-- 修复仅保留在本地分支 `codex/v1434-durable-batch-jobs`，未推送、未部署。新候选把指纹生成下沉到服务端规范化边界，浏览器只登记业务请求；点击重试会旋转失败项 operation key、仅补缺图并保留成功图；批量、任务抽屉和工坊微调统一进入同一图片就绪结算。
+- v143.4 没有作为独立版本继续接流；修复已累计进入 v143.5 生产。指纹生成下沉到服务端规范化边界，浏览器只登记业务请求；点击重试会旋转失败项 operation key、仅补缺图并保留成功图；批量、任务抽屉和工坊微调统一进入同一图片就绪结算。
 - 本地主服务最终 `856 tests / OK / 1 approved skip`。隔离真实 provider 验收先以三用户、三轮、每项两张异形参考图完成批量图文 `18/18` 与无限画布 `9/9`；最终自适应配置再并行完成批量 `3/3` 与画布 `3/3`，修复后累计 `33/33`，全部 `usedRefs=2 / skippedRefs=0`、内容哈希唯一、幂等重放复用成功任务、跨 owner 读取 `404`、unknown 为 `0`。Playwright 登录候选后批量页、画布 iframe/项目刷新、资产草稿页均正常；复杂验收额外修复了部分 production 缺少 `artifacts.copy/stage` 时资产页整页崩溃。最终 verifier 哈希见本节收尾记录。
 
 ### 本版范围
@@ -49,7 +58,7 @@
 - 修复后的真实 provider 证据为三用户三轮批量图文 `18/18`、无限画布 `9/9`，再以“最大 10 / 初始 6 / 自适应”最终配置并行完成批量 `3/3` 与画布 `3/3`；累计 `33/33`，双参考图全部使用、产物哈希唯一、production 图片全部就绪、receipt 全部 succeeded、outbox 全部 projected、unknown/failed/pending 为 0。
 - Playwright 登录隔离测试账号验证批量页刷新、画布 iframe/项目刷新和资产草稿渲染；资产页对部分 production 不再整页崩溃。编辑成员读取 `products` 的既有 403 控制台噪声未通过扩大权限处理，继续留在下一轮服务端 bootstrap 切割项。
 - release verifier：Phase 0 `0e9e90ef4565ed0fba9c5aad7b1797088be09ed3c5d84af99bdc79e896f4ce3b`；ESM `64 modules / 357 edges`，closure `db5086fcc788668c29a26867c0c843538dcb1c5bc4496f4659e0c2e376cadcf5`；canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`；runtime `65 files / 3,382,082 bytes / b1d214612839fbe6dac216381d05566275dd590ad61b50512f21f56041087e63`。
-- 当前分支仍未推送、未部署；生产保持 v143.3 在线。真实测试只使用隔离 SQLite/媒体目录与本地候选进程，没有连接或覆盖生产数据。
+- 本节能力已随 v143.5 累计部署；独立 v143.4 首次切流因浏览器 `crypto.subtle.digest` 兼容问题立即回退，修复后才随 v143.5 完整复验并重新接流。真实测试使用隔离 SQLite/媒体目录，没有覆盖生产数据。
 
 ## v143.3 - 2026-08-14（生产：批量图文单卡解耦与部分结果收敛）
 
