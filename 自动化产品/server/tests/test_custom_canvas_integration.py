@@ -893,7 +893,7 @@ console.log(JSON.stringify({{
         self.assertIn("nextReleaseId === canvasReleaseId", integration)
         self.assertIn("iframe.src = canvasEntryUrl(currentProjectId)", integration)
         self.assertIn("}, 60_000);", integration)
-        self.assertNotIn("v=20260815-v1435-ai-topic-partial-1", integration)
+        self.assertNotIn("v=20260817-v1436-token-plan-knowledge-1", integration)
 
     def test_fastapi_mounts_canvas_without_exposing_external_source_tree(self):
         mounts = [getattr(route, "path", "") for route in main.app.routes]

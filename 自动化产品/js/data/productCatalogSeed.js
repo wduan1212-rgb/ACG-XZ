@@ -3,7 +3,7 @@
 
 const now = () => Date.now();
 
-export const PRODUCT_CATALOG_VERSION = "20260810-product-db-v5-baige-6-full-infra";
+export const PRODUCT_CATALOG_VERSION = "20260817-product-db-v6-baige-token-plan-night";
 
 export const PRODUCT_CATALOG_SEED = [
   {
@@ -87,6 +87,90 @@ export const PRODUCT_CATALOG_SEED = [
     competitors: [],
     sourceDocument: "百度百舸产品信息与数据汇总-2.md",
     toneRule: "优先使用产品库中明确记录的能力和数据；涉及 LoongForge、RealOmni、Cosmos、dVLA-RL、AHA-WAM 时必须保留对应模型、硬件、规模或评测口径，不把局部性能外推为通用承诺。",
+    updatedAt: now()
+  },
+  {
+    id: "token-plan",
+    owner: "ours",
+    name: "百度千帆 Token Plan",
+    shortName: "Token Plan",
+    keywords: [
+      "Token Plan",
+      "TokenPlan",
+      "百度千帆 Token Plan",
+      "百度千帆Token Plan",
+      "千帆 Token Plan",
+      "千帆Token Plan",
+      "夜享计划",
+      "夜享 Tokens 加赠计划",
+      "夜享Tokens加赠计划"
+    ],
+    category: "AI 模型订阅与算力套餐",
+    brief: [
+      "百度千帆 Token Plan 是面向个人开发者、AI 重度用户与企业团队的 AI 模型订阅和算力套餐，包含个人版与企业版。个人版定位为“个人的 AI 算力流量包”，在 Coding Plan 基础上升级为灵活额度、全场景通用、按需消耗的 Token 量包；企业版定位为企业级 AI 生产力订阅服务，采用“席位制 + 企业共享积分包”和 Credits 积分体系，支持统一采购、管理与运营。",
+      "8 月 14 日起上线“夜享 Tokens 加赠计划”（简称夜享计划）：个人版与企业版全量有效订阅用户每天 21:00 至次日 08:00，在套餐内调用明确指定的 4 款模型时按 2 折消耗，约等于节省 80% 成本或获得约 5 倍调用量；无需申请、无需配置、订阅即享。个人版表述为 1 Token 抵 5 Tokens，企业版必须表述为 1 积分抵 5 积分。夜间 2 折只明确覆盖 GLM-5.2、DeepSeek-V4-Flash-0731、DeepSeek-V4-Pro、DeepSeek-V4-Flash-0423，不得扩大到其他模型。",
+      "个人版四档月额度：Mini 尝鲜版 1000 万 Token、Lite 标准版 4200 万 Token、Pro 进阶版 2.3 亿 Token、Max 专业版 7 亿 Token，分别面向轻度尝鲜、日常编码、高频 Coding 与重度 Agent 使用。个人版采用统一 Token 抵扣，不区分模型倍率、输入输出或缓存命中；取消原 Coding Plan 三层滑动窗口限流；模型可切换；兼容 OpenAI 与 Anthropic 双协议，并提供与后付费和企业版隔离的个人版 API Key 及用量统计。首购活动口径为每日 10 点开放、每日限量、五折秒杀，最低 4.9 元解锁 1000 万 Token。",
+      "企业版轻享版、标准版、高级版原月额度分别为 2 万、6 万、15 万积分，分别加赠 5000、1 万、2.5 万积分，升级后为 2.5 万、7 万、17.5 万积分；新增尊享版为每月 25 万积分。企业版支持成员管理、席位分配与回收、共享积分包、用量统计和告警提醒；百度千帆承诺不使用用户数据进行模型训练与服务优化，并提供企业级数据安全管理与权限控制。",
+      "Token Plan 个人版当前资料明确列出的支持模型包括 GLM-5.2、GLM-5.1、Kimi-K2.6、ERNIE-5.1、DeepSeek-V4-Pro、DeepSeek-V4-Flash-0423、DeepSeek-V4-Flash-0731；其中只有前述 4 款享受夜间 2 折。企业版支持全模态、多模型并以 Credits 统一抵扣。",
+      "同期加入 Token Plan 的 DeepSeek-V4-Flash-0731 在架构与参数规模不变的前提下通过重新后训练提升 Agent 与代码能力：总参数 2840 亿、激活参数 130 亿、支持 100 万 Token 上下文和思考/非思考双模式；9 项 Agent 基准全面超越前代预览版，Artificial Analysis 智能指数 50 分、较此前高 10 分；Frontend Code Arena 只能写“稳居开放类别前列”，不得写第一或榜首。",
+      "接入流程为订阅套餐、在“我的订阅”获取专属 API Key 和 Base URL、配置到 AI 工具。个人版 OpenAI 兼容 Base URL 为 https://qianfan.baidubce.com/v2/tokenplan/personal，Anthropic 兼容 Base URL 为 https://qianfan.baidubce.com/anthropic/tokenplan/personal；已兼容 Cursor、Windsurf、Cline、Cherry Studio、Kilo CLI 等 10 余种主流 AI Coding 工具及智能体框架。"
+    ].join("\n\n"),
+    coreFeatures: [
+      "个人版与企业版统一覆盖的 AI 模型订阅和算力套餐",
+      "夜享计划每日 21:00 至次日 08:00 指定模型按 2 折消耗",
+      "个人版统一 Token 抵扣且取消原 Coding Plan 三层滑动窗口限流",
+      "个人版兼容 OpenAI 与 Anthropic 双协议并提供隔离 API Key",
+      "企业版席位制、共享积分包、成员管理、用量统计和告警",
+      "Cursor、Windsurf、Cline、Cherry Studio、Kilo CLI 等 10 余种工具兼容",
+      "DeepSeek-V4-Flash-0731 支持 100 万 Token 上下文和双模式"
+    ],
+    verifiedFacts: [
+      "夜享 Tokens 加赠计划自 8 月 14 日起生效，每日 21:00 至次日 08:00，共 11 小时",
+      "夜间 2 折仅明确适用于 GLM-5.2、DeepSeek-V4-Flash-0731、DeepSeek-V4-Pro、DeepSeek-V4-Flash-0423",
+      "个人版与企业版全量有效订阅用户无需额外申请或配置即可享受夜享计划",
+      "个人版 Mini、Lite、Pro、Max 月额度依次为 1000 万、4200 万、2.3 亿、7 亿 Token",
+      "企业版轻享、标准、高级升级后月额度为 2.5 万、7 万、17.5 万积分，新增尊享版为 25 万积分",
+      "DeepSeek-V4-Flash-0731 总参数 2840 亿、激活参数 130 亿、支持 100 万 Token 上下文",
+      "个人版支持 OpenAI 与 Anthropic 双协议以及 10 余种主流 AI Coding 工具和 Agent 框架",
+      "企业版采用 Credits 积分体系，并承诺不使用用户数据进行模型训练与服务优化"
+    ],
+    forbiddenClaims: [
+      "不得把夜间 2 折扩大到资料未明确覆盖的模型、按量后付费调用或无效订阅用户",
+      "企业版必须使用 Credits 积分口径，不得写成企业版 Token 余额",
+      "Frontend Code Arena 只能写稳居开放类别前列，不得写第一、榜首或冠军",
+      "不得把首购 4.9 元、五折、每日限量等活动口径写成永久价格或无限库存",
+      "不得虚构资料中未给出的企业版发布时间、客户名称、全模型夜享折扣或额外安全承诺"
+    ],
+    tutorialAngles: [
+      "如何在每天 21:00 后把 Agent 长链路任务切到夜享时段",
+      "个人版 OpenAI 与 Anthropic 双协议三步接入教程",
+      "Mini、Lite、Pro、Max 四档额度怎么按使用强度选择",
+      "企业如何用席位与共享积分包统一管理分散采购",
+      "DeepSeek-V4-Flash-0731 如何在 Token Plan 中直接调用"
+    ],
+    comparisonAngles: [
+      "个人版统一 Token 抵扣与传统模型倍率计费的差异",
+      "个人版 Token 量包与企业版 Credits 共享积分包的边界",
+      "白天正常消耗与夜间 2 折时段的任务调度差异",
+      "Token Plan 与原 Coding Plan 三层滑动窗口限流的变化"
+    ],
+    blogAngles: [
+      "别把夜享计划写成全模型打折：真正覆盖的是哪 4 款",
+      "让 Agent 深夜跑长链路任务，为什么同一额度能支撑约 5 倍调用量",
+      "从个人算力流量包到企业 AI 生产力订阅，Token Plan 的两套口径",
+      "DeepSeek-V4-Flash-0731 与夜享计划为什么适合一起讲"
+    ],
+    visualAngles: [
+      "21:00→次日08:00 的 11 小时时间轴与 2 折数据卡",
+      "4 款夜享模型清单与不可扩大的边界提示",
+      "个人版四档 Token 额度阶梯",
+      "企业版原额度、赠送额度和升级后额度对照表",
+      "订阅→获取 API Key/Base URL→接入工具三步流程"
+    ],
+    competitors: ["codex", "claude-code", "cursor", "windsurf", "trae"],
+    sourceDocument: "Token Plan夜享计划-产品知识库.md",
+    sourceDigest: "54c8abcbe863e4ad74bb1e86d92f05340ac4a72ac4230fb99aebc116ff9f4532",
+    toneRule: "产品全称优先写“百度千帆 Token Plan”，简称可写“Token Plan”；夜享活动全称为“夜享 Tokens 加赠计划”、简称“夜享计划”。所有时间、折扣、模型、额度、价格、榜单和安全表述必须保留资料口径，不把活动利益扩大为全模型或永久承诺。",
     updatedAt: now()
   },
   {
@@ -277,7 +361,7 @@ export function mergeProductCatalog(existing = []) {
   (existing || []).forEach(p => {
     if (!p || !p.id) return;
     const seeded = byId.get(p.id);
-    const managedSeed = seeded?.id === "baige";
+    const managedSeed = ["baige", "token-plan"].includes(seeded?.id);
     byId.set(p.id, normalizeProductDisplay(seeded
       ? (managedSeed ? { ...p, ...seeded } : { ...seeded, ...p, updatedAt: p.updatedAt || seeded.updatedAt })
       : { ...p }));

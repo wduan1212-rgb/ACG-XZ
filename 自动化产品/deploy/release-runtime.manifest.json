@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260815-v1435-ai-topic-partial-1",
+  "releaseId": "20260817-v1436-token-plan-knowledge-1",
   "fileCount": 65,
-  "totalBytes": 3383588,
+  "totalBytes": 3383604,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 122148,
-      "sha256": "591220c3c046a3111f9a4d4516276b22e197d674635dab25db2f7048a2bb9424"
+      "size": 122152,
+      "sha256": "e6321b9fb00d39bc0181be06fa4bbf3d8eafed8b17efd7cbd42991c9899a0416"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -201,8 +201,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 35422,
-      "sha256": "781b8e9677ab6bd80e924a185afcddbdf35bdcd012c31b421e3cc981b15566e4"
+      "size": 35434,
+      "sha256": "27c1e1dcd710b43d086f54a866de0ce3a721c9b7dc03fe4c5a13da9018570640"
     },
     {
       "path": "deploy/docker_entrypoint.sh",

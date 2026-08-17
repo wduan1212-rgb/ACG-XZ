@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260815-v1435-ai-topic-partial-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260817-v1436-token-plan-knowledge-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -881,7 +881,10 @@ function trimCreativeBrief(text, max = 220) {
 function productAliases(product) {
   return [product?.name, product?.shortName, product?.id, ...(product?.keywords || [])]
     .filter(Boolean)
-    .flatMap(x => String(x).split(/[\/｜|、\s]+/))
+    // Keep multi-word product names intact. Splitting "Token Plan" into
+    // "Token" and "Plan" would make ordinary English copy select the wrong
+    // product; explicit separators still support catalog entries with aliases.
+    .flatMap(x => String(x).split(/[\/｜|、]+/))
     .map(x => x.trim())
     .filter(x => x && x.length >= 2);
 }

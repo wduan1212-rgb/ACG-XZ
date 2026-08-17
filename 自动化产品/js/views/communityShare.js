@@ -2,7 +2,7 @@ import { community } from "../core/remote.js";
 import { currentMember } from "../core/store.js";
 import { esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260815-v1435-ai-topic-partial-1";
+import { openModal, toast } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-1";
 
 const CATEGORIES = ["视频灵感", "视觉设计"];
 const SAFE_MEDIA_PREFIXES = [
