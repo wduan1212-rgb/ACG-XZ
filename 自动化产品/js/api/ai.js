@@ -934,6 +934,24 @@ function replaceOwnProductAlias(text = "", alias = "", current = "百度搭子")
   return normalizeOwnProductNoise(out, current);
 }
 
+function ensureOfficialProductFirstMention(text = "", product = null) {
+  const official = sanitizeProduct(product?.officialDisplayName || "");
+  let out = String(text || "");
+  if (!official || !out || out.includes(official)) return out;
+  const aliases = productAliases(product)
+    .filter(alias => alias && alias !== official)
+    .sort((left, right) => right.length - left.length);
+  for (const alias of aliases) {
+    const re = productMentionRegex(alias);
+    if (!re || !re.test(out)) continue;
+    if (/^[a-z0-9][a-z0-9._-]*$/i.test(alias)) {
+      return out.replace(re, (_match, before = "", after = "") => `${before}${official}${after}`);
+    }
+    return out.replace(re, official);
+  }
+  return out;
+}
+
 function normalizeOwnProductNoise(text = "", current = "百度搭子") {
   let out = String(text || "");
   if (current === "百度搭子") {
@@ -1121,7 +1139,7 @@ function copyProductBrief(product) {
       : `${label}、AI工具、桌面智能体、这个工具`;
   return `【发布文案轻量产品事实】
 当前主产品：${name}。标题、正文和标签可以自然出现当前主产品名；如果用户主题里有同类/竞品产品名，按对比、联动或替换关系自然处理。
-品类指代：${categoryAliases}。
+${p.officialDisplayName ? `称呼规则：正文首次出现产品时使用官方全称“${sanitizeProduct(p.officialDisplayName)}”，后文可使用短名“${productDisplayName(p)}”。\n` : ""}品类指代：${categoryAliases}。
 可用事实：${features || brief || "按用户创作需求和图卡内容写，不编造未确认能力。"}
 ${verified ? `已核实数据：${verified}\n` : ""}${forbidden ? `禁止外推：${forbidden}\n` : ""}优先级：用户创作需求 > 发布文案 > 图卡脚本 > 产品事实校准。产品事实只用于纠错和补充边界，不允许覆盖用户主题。`;
 }
@@ -3044,6 +3062,7 @@ ${productRelationLine(rel.slice(0, 2))}
           ),
           chineseProductDisplayName(product, "百度搭子"),
         );
+        copyText = ensureOfficialProductFirstMention(copyText, product);
         // Product-name normalization may expand a phrase after the first pass.
         // Rebuild tags without slicing. The first request is responsible for
         // staying under the limit; a violating response is rejected intact and

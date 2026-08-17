@@ -89,3 +89,30 @@ test("repository keeps the exact imported Markdown source and full-word alias ma
   assert.match(aiSource, /p\.contentAliases/);
   assert.match(aiSource, /product\?\.officialDisplayName/);
 });
+
+test("generated Token Plan copy uses the official full name on first mention", async () => {
+  globalThis.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+  globalThis.window = { location: globalThis.location, addEventListener() {}, dispatchEvent() {}, __toast() {} };
+  globalThis.document = { querySelector() { return null; }, querySelectorAll() { return []; } };
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: JSON.stringify({
+      copy: "Token Plan 个人版按 Token 抵扣，企业版按 Credits 积分结算。\\n#TokenPlan #AI模型订阅 #算力套餐 #开发者工具",
+    }) } }] }),
+    text: async () => "",
+  });
+  const llm = await import("../js/api/llm.js?v=20260727-v118-7");
+  llm.LLM_CONFIG.apiKey = "server-managed";
+  llm.LLM_CONFIG.endpoint = "/api/chat/completions";
+  llm.LLM_CONFIG.serverManaged = true;
+  const { state } = await import("../js/core/store.js");
+  state.products = mergeProductCatalog([]);
+  const { AI } = await import("../js/api/ai.js?official-token-plan-test");
+  const result = await AI.generateImageCopyFromTitle({
+    title: "百度千帆 Token Plan：个人版 Token 和企业版 Credits 怎么选？",
+    account: {},
+  });
+  assert.match(result.copy, /^百度千帆 Token Plan/);
+  assert.doesNotMatch(result.copy, /桌面智能体/);
+});
