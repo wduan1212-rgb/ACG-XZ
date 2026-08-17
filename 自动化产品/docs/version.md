@@ -4,7 +4,7 @@
 
 ### 本版范围
 
-- 将用户提供的 `Token Plan夜享计划-产品知识库.md` 逐字节纳入仓库产品知识来源，源文件 SHA-256 为 `54c8abcbe863e4ad74bb1e86d92f05340ac4a72ac4230fb99aebc116ff9f4532`；产品库新增受管产品 `token-plan`，正式全称为“百度千帆 Token Plan”，同时识别 `Token Plan`、无空格写法、千帆简称及夜享计划相关明确别名。
+- 将用户提供的 `Token Plan夜享计划-产品知识库.md` 逐字节纳入仓库产品知识来源，源文件 SHA-256 为 `54c8abcbe863e4ad74bb1e86d92f05340ac4a72ac4230fb99aebc116ff9f4532`；产品库新增受管产品 `token-plan`，内容官方称呼和正式全称均为“百度千帆 Token Plan”，同时识别 `Token Plan`、无空格写法、千帆简称及夜享计划相关明确别名。
 - 产品事实覆盖个人版/企业版口径、每日 `21:00–次日 08:00` 夜享时段、指定四款模型 `2 折`、个人版 Token 与企业版 Credits 边界、额度档位、双协议接入、工具兼容和 DeepSeek-V4-Flash-0731 已确认参数；禁止把夜享扩写为全模型或永久优惠，也禁止把 Frontend Code Arena 写成第一。
 - 多词英文别名在产品匹配时保持完整，不再把 `Token Plan` 拆成泛化的 `Token` 与 `Plan`，避免普通英文文案误命中。产品目录同时声明内容品类和自然指代，Token Plan 使用“AI 模型订阅与算力套餐/这个套餐”，不落入旧的“桌面智能体”兜底。`baige` 与 `token-plan` 均由官方 seed 刷新陈旧副本，自定义产品继续原样保留。本版不新增数据库 schema、持久目录、后端生成 API、权限门禁、图片队列策略或批量图文/无限画布执行状态。
 - release/cache 统一为 `20260817-v1436-token-plan-knowledge-1`。本地回归：主服务 `857 tests / OK / 1 approved skip`、视频 sidecar `160/160`、Node `137/137`；Token Plan 定向 `4/4`、图文相关 Python `47/47`，release verifier 已通过。目标 Linux 锁定全量、隔离真实 provider 批量图文和切流验收尚未完成，因此当前仍是本地候选，生产继续运行 v143.5。

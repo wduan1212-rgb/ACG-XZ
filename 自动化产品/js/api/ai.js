@@ -376,6 +376,8 @@ function productDisplayName(product, fallback = "本次产品") {
 
 function chineseProductDisplayName(product, fallback = "百度搭子") {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""} ${product?.category || ""}`;
+  const officialDisplayName = sanitizeProduct(product?.officialDisplayName || "");
+  if (officialDisplayName) return officialDisplayName;
   if (/miaoda|秒哒/i.test(text)) return "百度秒哒";
   if (/dumate|百度搭子|搭子|桌面智能体/i.test(text)) return "百度搭子";
   return productDisplayName(product, fallback)

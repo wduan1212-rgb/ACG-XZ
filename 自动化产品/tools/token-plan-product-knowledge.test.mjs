@@ -19,6 +19,7 @@ test("Token Plan official product identity recognizes short and full names", () 
   assert.ok(tokenPlan);
   assert.equal(tokenPlan.name, "百度千帆 Token Plan");
   assert.equal(tokenPlan.shortName, "Token Plan");
+  assert.equal(tokenPlan.officialDisplayName, "百度千帆 Token Plan");
   assert.equal(tokenPlan.contentCategoryLabel, "AI 模型订阅与算力套餐");
   assert.deepEqual(tokenPlan.contentAliases, ["Token Plan", "AI 模型订阅", "算力套餐", "这个套餐"]);
   assert.match(PRODUCT_CATALOG_VERSION, /token-plan-night/);
@@ -86,4 +87,5 @@ test("repository keeps the exact imported Markdown source and full-word alias ma
   assert.doesNotMatch(aiSource, /split\(\/\[\\\/｜\|、\\s\]\+\//);
   assert.match(aiSource, /product\?\.contentCategoryLabel/);
   assert.match(aiSource, /p\.contentAliases/);
+  assert.match(aiSource, /product\?\.officialDisplayName/);
 });

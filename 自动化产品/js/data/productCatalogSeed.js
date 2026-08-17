@@ -94,6 +94,7 @@ export const PRODUCT_CATALOG_SEED = [
     owner: "ours",
     name: "百度千帆 Token Plan",
     shortName: "Token Plan",
+    officialDisplayName: "百度千帆 Token Plan",
     keywords: [
       "Token Plan",
       "TokenPlan",
