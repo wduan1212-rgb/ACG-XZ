@@ -4,17 +4,17 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById, refreshDeliveryMetrics } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
-import { STAGES, statusPill } from "../domain/productions.js?v=20260817-v1436-token-plan-knowledge-1";
-import { deliveredAssets } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-1";
+import { STAGES, statusPill } from "../domain/productions.js?v=20260817-v1436-token-plan-knowledge-2";
+import { deliveredAssets } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-2";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260817-v1436-token-plan-knowledge-1";
+import { AI } from "../api/ai.js?v=20260817-v1436-token-plan-knowledge-2";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260817-v1436-token-plan-knowledge-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260817-v1436-token-plan-knowledge-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260817-v1436-token-plan-knowledge-2";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260817-v1436-token-plan-knowledge-2";
+import { emptyState, openModal } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-2";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260817-v1436-token-plan-knowledge-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260817-v1436-token-plan-knowledge-2";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

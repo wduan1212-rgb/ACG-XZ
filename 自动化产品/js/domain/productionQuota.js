@@ -1,6 +1,6 @@
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { shanghaiDayKey } from "./publishSchedule.js?v=20260817-v1436-token-plan-knowledge-1";
+import { shanghaiDayKey } from "./publishSchedule.js?v=20260817-v1436-token-plan-knowledge-2";
 
 export const ACCOUNT_DAILY_PUBLISH_LIMIT = 2;
 

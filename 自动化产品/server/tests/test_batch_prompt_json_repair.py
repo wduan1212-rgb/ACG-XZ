@@ -123,7 +123,7 @@ const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260817-v1436-token-plan-knowledge-1');
+const { AI } = await import('./js/api/ai.js?v=20260817-v1436-token-plan-knowledge-2');
 const completedTask = { id:'done', stage:'review', images:[{ id:'kept' }] };
 const completedBefore = JSON.stringify(completedTask);
 const requestFor = topic => AI.generateImagePrompts({
@@ -193,7 +193,7 @@ const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260817-v1436-token-plan-knowledge-1');
+const { AI } = await import('./js/api/ai.js?v=20260817-v1436-token-plan-knowledge-2');
 let error = '';
 try {
   await AI.generateImagePrompts({

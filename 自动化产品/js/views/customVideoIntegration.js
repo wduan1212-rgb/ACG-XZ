@@ -1,5 +1,5 @@
 const mounted = new WeakMap();
-const CUSTOM_VIDEO_FRAME_RELEASE = "20260817-v1436-token-plan-knowledge-1";
+const CUSTOM_VIDEO_FRAME_RELEASE = "20260817-v1436-token-plan-knowledge-2";
 
 function normalizedOutput(raw) {
   const source = raw && typeof raw === "object" ? raw : {};

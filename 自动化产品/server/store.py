@@ -6036,6 +6036,13 @@ def _private_media_inventory_files(root, kind, *, recursive):
                     issues["unsafeEntries"] += 1
                 continue
             relative = path.relative_to(root).as_posix()
+            if any(part.startswith(".") for part in Path(relative).parts):
+                # Video rendering uses hidden ``.candidate`` files as atomic
+                # work-in-progress artifacts.  They can disappear as soon as
+                # the final output is committed, so they are never durable
+                # private media and must not enter the ownership registry.
+                issues["temporaryFiles"] += 1
+                continue
             if relative.endswith(".tmp"):
                 issues["temporaryFiles"] += 1
                 continue
@@ -6233,6 +6240,7 @@ def _private_media_plan_locked(
         "ambiguousFiles": 0,
         "teamBindingConflicts": 0,
         "registryMissingFiles": 0,
+        "staleRegistryFiles": 0,
         "canvasFilesystemQuarantined": 0,
         "overrideMissing": 0,
         "overrideExtra": 0,
@@ -6382,6 +6390,7 @@ def _private_media_plan_locked(
     # agree. Afterwards the registry is authoritative: shared delivery or
     # asset documents are usage references and must not redefine ownership.
     # Strong server-derived signals and cross-scope references still block.
+    business_referenced = set(referenced)
     registry_rows = conn.execute(
         "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
         "provenance_id,created_at,updated_at FROM private_media_registry "
@@ -6405,9 +6414,18 @@ def _private_media_plan_locked(
         registry_scopes_by_identity.setdefault(identity, set()).add(
             registry_scope
         )
-        add_reference(identity, registry_scope)
         add_candidate(identity, registry_owner, row[4], row[5])
-        if identity[0] != "canvas-blob" and identity not in inventory:
+        registry_file_missing = (
+            identity[0] != "canvas-blob" and identity not in inventory
+        )
+        if registry_file_missing and identity not in business_referenced:
+            # Registry rows record ownership, not business retention.  A file
+            # removed after its last document reference disappeared is an
+            # audit warning, not a reason to stop every production writer.
+            issue_counts["staleRegistryFiles"] += 1
+            continue
+        add_reference(identity, registry_scope)
+        if registry_file_missing:
             issue_counts["registryMissingFiles"] += 1
 
     # Upload names are generated as member-id--asset-id.ext by the server.
@@ -6697,6 +6715,11 @@ def _private_media_plan_locked(
         if not existing:
             pending += 1
             continue
+        if migrated:
+            # A registry row freezes the scope at creation time.  Later team
+            # membership changes must not reinterpret or reassign historical
+            # media, and therefore are not migration conflicts.
+            continue
         if str(existing[3] or "") != str(team_id or ""):
             registry_conflicts += 1
             registry_conflict_rows.append({
@@ -6731,6 +6754,7 @@ def _private_media_plan_locked(
         "temporaryFiles",
         "quarantinedFiles",
         "canvasFilesystemQuarantined",
+        "staleRegistryFiles",
     }
     nonblocking_issue_names = warning_names | {"missingReferencedFiles"}
     blocking = sum(

@@ -34,10 +34,24 @@ class ProductionRecoveryTest(unittest.TestCase):
         self.previous_path = store.DB_PATH
         self.previous_blob_dir = store.CUSTOM_CANVAS_BLOB_DIR
         self.previous_upload_dir = store.PRIVATE_MEDIA_UPLOAD_DIR
+        self.previous_composed_dir = store.PRIVATE_MEDIA_COMPOSED_DIR
+        self.previous_video_output_dir = store.PRIVATE_MEDIA_VIDEO_OUTPUT_DIR
+        self.previous_video_upload_dir = store.PRIVATE_MEDIA_VIDEO_UPLOAD_DIR
         self.previous_initialized = store._initialized
         store.DB_PATH = self.root / "data.sqlite"
         store.CUSTOM_CANVAS_BLOB_DIR = self.root / "canvas_blobs"
         store.PRIVATE_MEDIA_UPLOAD_DIR = self.root / "uploads"
+        store.PRIVATE_MEDIA_COMPOSED_DIR = self.root / "composed"
+        store.PRIVATE_MEDIA_VIDEO_OUTPUT_DIR = self.root / "video-outputs"
+        store.PRIVATE_MEDIA_VIDEO_UPLOAD_DIR = self.root / "video-uploads"
+        for path in (
+            store.CUSTOM_CANVAS_BLOB_DIR,
+            store.PRIVATE_MEDIA_UPLOAD_DIR,
+            store.PRIVATE_MEDIA_COMPOSED_DIR,
+            store.PRIVATE_MEDIA_VIDEO_OUTPUT_DIR,
+            store.PRIVATE_MEDIA_VIDEO_UPLOAD_DIR,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
         store._initialized = False
         store._ensure_db()
         self._mark_data_migrations()
@@ -46,6 +60,9 @@ class ProductionRecoveryTest(unittest.TestCase):
         store.DB_PATH = self.previous_path
         store.CUSTOM_CANVAS_BLOB_DIR = self.previous_blob_dir
         store.PRIVATE_MEDIA_UPLOAD_DIR = self.previous_upload_dir
+        store.PRIVATE_MEDIA_COMPOSED_DIR = self.previous_composed_dir
+        store.PRIVATE_MEDIA_VIDEO_OUTPUT_DIR = self.previous_video_output_dir
+        store.PRIVATE_MEDIA_VIDEO_UPLOAD_DIR = self.previous_video_upload_dir
         store._initialized = self.previous_initialized
         self.temp.cleanup()
 
@@ -1012,6 +1029,85 @@ class ProductionRecoveryTest(unittest.TestCase):
         self.assertFalse(replay["applied"])
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_temporary_and_unreferenced_registry_media_are_audit_only(self):
+        owner = "registry-lifecycle-owner"
+        self._member(owner, role="editor")
+        video_root = store.PRIVATE_MEDIA_VIDEO_OUTPUT_DIR
+        hidden = video_root / "project-1" / ".scene-01-work.candidate.mp4"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_bytes(b"temporary-render")
+        stale_key = f"{owner}--stale.png"
+        now = int(time.time() * 1000)
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO private_media_registry(media_kind,media_key,owner_id,"
+                "team_id,provenance_kind,provenance_id,created_at,updated_at) "
+                "VALUES('upload',?,?, '', 'server-asset','retired-asset',?,?)",
+                (stale_key, owner, now, now),
+            )
+            conn.commit()
+        status = store.private_media_registry_status()
+        self.assertTrue(status["ok"])
+        self.assertEqual(1, status["counts"]["temporaryFiles"])
+        self.assertEqual(1, status["counts"]["staleRegistryFiles"])
+        self.assertEqual(0, status["counts"]["registryMissingFiles"])
+        self.assertEqual(0, status["counts"]["unisolatedMissingReferencedFiles"])
+        self.assertIn("temporaryFiles", status["warnings"])
+        self.assertIn("staleRegistryFiles", status["warnings"])
+
+    def test_business_reference_missing_file_still_blocks(self):
+        owner = "referenced-registry-owner"
+        self._member(owner, role="editor")
+        media_key = f"{owner}--missing.png"
+        now = int(time.time() * 1000)
+        self._insert_scoped_doc(
+            "assets", "referenced-missing-asset", owner,
+            {
+                "id": "referenced-missing-asset", "ownerId": owner,
+                "serverFileName": media_key,
+                "fileUrl": f"/api/files/{media_key}",
+                "hasBlob": True,
+            },
+        )
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO private_media_registry(media_kind,media_key,owner_id,"
+                "team_id,provenance_kind,provenance_id,created_at,updated_at) "
+                "VALUES('upload',?,?, '', 'server-asset',?,?,?)",
+                (media_key, owner, "referenced-missing-asset", now, now),
+            )
+            conn.commit()
+        status = store.private_media_registry_status()
+        self.assertFalse(status["ok"])
+        self.assertEqual(1, status["counts"]["registryMissingFiles"])
+        self.assertEqual(1, status["counts"]["unisolatedMissingReferencedFiles"])
+        self.assertEqual(0, status["counts"]["staleRegistryFiles"])
+
+    def test_migrated_registry_keeps_historical_team_scope(self):
+        owner = "historical-team-owner"
+        team_id = "historical-team"
+        self._member(owner, role="editor")
+        now = int(time.time() * 1000)
+        media_key = f"{owner}--historical.png"
+        store.PRIVATE_MEDIA_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        (store.PRIVATE_MEDIA_UPLOAD_DIR / media_key).write_bytes(PNG_BYTES)
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at) "
+                "VALUES(?,?,?,'customer','active','team','shared',?)",
+                (team_id, team_id, team_id, now),
+            )
+            conn.execute(
+                "INSERT INTO private_media_registry(media_kind,media_key,owner_id,"
+                "team_id,provenance_kind,provenance_id,created_at,updated_at) "
+                "VALUES('upload',?,?,?,'server-upload',?,?,?)",
+                (media_key, owner, team_id, media_key, now, now),
+            )
+            conn.commit()
+        status = store.private_media_registry_status()
+        self.assertTrue(status["ok"])
+        self.assertEqual(0, status["counts"]["registryConflicts"])
 
     def test_exact_46_media_isolation_preserves_history_and_fails_closed_on_drift(self):
         owner = "isolation-owner"

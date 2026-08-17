@@ -5,10 +5,10 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById, currentMember, currentTeam } from "../core/store.js";
 import { community } from "../core/remote.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
-import { downloadAsset } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-1";
+import { downloadAsset } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-2";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-1";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260817-v1436-token-plan-knowledge-1";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-2";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260817-v1436-token-plan-knowledge-2";
 
 let fAcc = "all", fQ = "", fKind = "all", fSource = "all", fBackendKind = "bgm", libraryMode = "drafts", collapseInitialized = false;
 let activeAssetsController = null;
@@ -161,7 +161,7 @@ export const assetsView = {
         root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>草稿箱</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="assetDraftsHost"></div></div>`;
         mountTopDock();
         wireLibraryTabs();
-        import("./draftsView.js?v=20260817-v1436-token-plan-knowledge-1").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260817-v1436-token-plan-knowledge-2").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });

@@ -1,22 +1,22 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260817-v1436-token-plan-knowledge-1";
+import { AI } from "../api/ai.js?v=20260817-v1436-token-plan-knowledge-2";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-1";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260817-v1436-token-plan-knowledge-2";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260817-v1436-token-plan-knowledge-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260817-v1436-token-plan-knowledge-2";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260817-v1436-token-plan-knowledge-2";
 import { isAccountDisabled } from "../domain/accounts.js";
 import {
   accountPublishAvailable,
   accountPublishQuota,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "../domain/productionQuota.js?v=20260817-v1436-token-plan-knowledge-1";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260817-v1436-token-plan-knowledge-1";
-import { resolvePublishPlanDate, shanghaiDayKey } from "../domain/publishSchedule.js?v=20260817-v1436-token-plan-knowledge-1";
+} from "../domain/productionQuota.js?v=20260817-v1436-token-plan-knowledge-2";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260817-v1436-token-plan-knowledge-2";
+import { resolvePublishPlanDate, shanghaiDayKey } from "../domain/publishSchedule.js?v=20260817-v1436-token-plan-knowledge-2";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
