@@ -1,21 +1,21 @@
 # 星阵任务交接指南
 
-更新时间：2026-08-15
+更新时间：2026-08-17
 
 用途：当前 Codex 线程结束或需要转交工作时，按本文档整理真实状态并发送给用户指定的目标线程。交接必须让新线程快速获得“当前事实”，历史记录只按任务需要检索，不再默认全文读取。
 
 重要原则：不要在交接消息、文档、代码、提交信息里写入任何明文 API Key、服务器密码、公网 IP、私网 IP、token 或账号凭据。
 
-## 0. 2026-08-15 当前交接快照
+## 0. 2026-08-17 当前交接快照
 
-- 当前生产为 v143.5，功能提交 `c0385a58`，分支 `codex/v1434-durable-batch-jobs`，release/cache `20260815-v1435-ai-topic-partial-1`，sibling release `20260815-v1435-ai-topic-partial-1-c0385a58`。main/sidecar 私有端口为 `8803/8778`；v143.3 main/sidecar/routing 仍 active/RW，停止 v143.5 routing 即可回到在线旧代码而不替换新数据。
-- AI 选题已按账号保留部分结果：可先把成功标题/正文填入空白账号，刷新或重开仍恢复；补生成只提交缺失账号，不重跑成功项、不覆盖手工内容。查询词变化开启新一轮，移除账号只裁剪对应草稿；统计只按实际成功条数记录且不参与授权门禁。
-- v143.5 累计包含 v143.4 的 owner-scoped 批量图文耐久 job、失败项真实重试、图片全就绪结算，以及图片 provider `最大 10 / 初始 6`、繁忙收缩与成功恢复的 owner/surface 公平队列。无限画布保留独立耐久 batch/job 状态机，只共享受控 provider 容量。
-- 本地和目标 Linux 最终主服务 `857 tests / OK / 1 approved skip`、sidecar `160/160`、Node `133/133`；五轮复杂定向为 `455/455 + 20/20`。release verifier Phase 0 为 `c1a944785b370cf7a26088082b66d193d484d609a6125708e7372bee514f838b`，runtime 为 `65 files / 3,383,588 bytes / d1796c7bf4eefd281b744a0a57737684a047d33a1fcebba246822bd7cb3bf116`。
-- 服务器无流量隔离真实 provider 验收为 AI 选题 `8/8`、三用户批量图文 `3/3` 与无限画布 `3/3`；每个图片结果都使用两张异形/透明参考图，幂等重放、跨 owner `404` 和 unknown 0 通过。隔离验收进程已停止，没有写入生产账号或媒体。
-- fresh SQLite 保护点 `/data/dumate-studio/backups/v1435-pre-switch-20260814T164716Z`、逐字节 restore drill 和 `/data/dumate-studio/deployment-backups/v1435-pre-switch-20260814T170527Z` 代码/单元/路由/私密环境回滚集均已验签。发布只安装代码/静态；没有上传或覆盖 SQLite、账号、媒体、任务、认证、Nginx 或私密 provider 配置。
-- 切流后公网 root/health/OpenAPI 20 轮共 `60/60`，入口脚本与发布包逐字节一致；真实浏览器完整渲染 v143.5，只有游客态的预期 `401`。readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，总行数 `89,758→89,758`，逐表与六类媒体无减少，新服务 `NRestarts=0` 且无新增 critical/traceback/5xx journal。
-- `/data` 当前约 87% 使用、约 125G 可用。旧 restore drills 仍是恢复证据，未获明确批准不得删除；本次没有做清理。
+- 当前生产为 v143.6，功能提交 `11b7187e7f598d0a93ffb34900a163815a99e876`，分支 `codex/v1436-token-plan-knowledge`，release/cache `20260817-v1436-token-plan-knowledge-2`，sibling release `20260817-v1436-token-plan-knowledge-2-11b7187e`。main/sidecar 私有端口为 `8805/8780`；v143.5 main/sidecar/routing 仍 active/RW，停止 v143.6 routing 即可回到在线旧代码而不替换新数据。
+- 产品库受管产品 `token-plan` 的官方全称为“百度千帆 Token Plan”，同时稳定识别 `Token Plan`、无空格、千帆及夜享计划明确别名；源文档 SHA-256 `54c8abcbe863e4ad74bb1e86d92f05340ac4a72ac4230fb99aebc116ff9f4532`。多词英文别名不拆成泛词，Token Plan 不落入“桌面智能体”旧分类；受管 seed 刷新不覆盖用户自定义产品。
+- 视频工坊隐藏 `.candidate` 中间件已从耐久媒体清单切走；无业务引用的缺失 registry 行只作为陈旧告警；已迁移媒体沿用登记时 scope。真正被业务记录引用的缺失仍 fail closed。生产最终 `registryMissingFiles=0 / registryConflicts=0 / unisolatedMissingReferencedFiles=0`，没有使用旧媒体例外环境变量。
+- 本地和目标 Linux 最终主服务 `860 tests / OK / 1 approved skip`、sidecar `160/160`、Node `138/138`。release verifier Phase 0 为 `fdfef74c2c107f39fdf6a83bf7fbad4adf59db5f93955911df291af194ea1a41`，runtime 为 `65 files / 3,384,871 bytes / fb26554e01abb219bc1cdc7eb2c5c29211317218e222279084c289a99eed4038`。
+- 隔离真实 provider 验收为两种 Token Plan 称呼正文/提示词/图片 `4/4`，两个隔离团队两轮并发批量图文 `10/10`、无限画布 `6/6`、AI 选题 `12/12`；双异形/透明参考图全部使用，幂等重放、跨 owner `8/8` 404 和 unknown 0 通过。隔离进程已停止，没有写入生产账号或媒体。
+- fresh SQLite 保护点 `/data/dumate-studio/backups/v1436-final-pre-switch-20260817T145704Z`、逐字节 restore drill 和 `/data/dumate-studio/deployment-backups/v1436-final-pre-switch-20260817T145704Z` 代码/单元/路由/私密环境回滚集均已验签。发布只安装代码/静态，没有上传或覆盖 SQLite、账号、媒体、任务、认证、Nginx 或私密 provider 配置。
+- 切流后公网 root/health/OpenAPI/main.js `20/20`，主脚本与产品 seed 均逐字节匹配；冷浏览器完整渲染 v143.6，只有游客态预期 401。readiness 为 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok / 48 tables`，总行数 `95,716→95,717`，逐表与五类媒体无减少，新旧服务均 `NRestarts=0`。
+- “曹同学无法给会话分组”只读诊断未发现角色/团队级故障：同角色同团队的另一账号存在多个持久分组，前端入口没有角色门禁；报告账号只有一个未分组会话，按浏览器缓存、侧栏折叠或本地状态个例处理，未修改稳定生产链路。
 
 ## 1. 项目固定信息
 
@@ -23,7 +23,7 @@
 - 产品项目目录：`/Users/macbookpro/Desktop/obsidian/知识库/百度/codex自动化产品2/自动化产品`
 - Git 工作树根目录：`/Users/macbookpro/Desktop/obsidian/知识库/百度/codex自动化产品2`（历史仓库结构，不扩大产品范围）。
 - GitHub 仓库：`https://github.com/wduan1212-rgb/ACG-XZ.git`
-- 当前主开发/生产集成分支：`codex/v1434-durable-batch-jobs`
+- 当前主开发/生产集成分支：`codex/v1436-token-plan-knowledge`
 - 本地预览入口：`http://127.0.0.1:8787/`
 - 部署目标：百度智能云 BCC。
 - 敏感配置只允许保存在服务器环境变量或私密配置中，不得写入仓库、文档或聊天。

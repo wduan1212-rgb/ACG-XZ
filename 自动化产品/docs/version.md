@@ -1,6 +1,15 @@
 # 星阵版本记录
 
-## v143.6 - 2026-08-17（候选：百度千帆 Token Plan 产品知识库）
+## v143.6 - 2026-08-17（生产：百度千帆 Token Plan 产品知识库与媒体生命周期切割）
+
+### 生产部署闭环
+
+- 生产流量运行功能提交 `11b7187e7f598d0a93ffb34900a163815a99e876`，分支 `codex/v1436-token-plan-knowledge`，release/cache `20260817-v1436-token-plan-knowledge-2`，sibling release `20260817-v1436-token-plan-knowledge-2-11b7187e`。main/sidecar 私有端口为 `8805/8780`；v143.5 main/sidecar/routing 全部继续 active/RW，停止 v143.6 routing 即可回到在线旧代码，不恢复或覆盖新业务数据。发布全程没有停服或转只读。
+- 服务器只安装最终验签代码/静态包，SHA-256 `ad31e9a859ed7ae864e35991c3c0f3d8da02b678d849db33cc349a4d6d19754c`，共 `606` 个安全成员、`507` 个文件。SQLite、账号、成员、认证、uploads、composed、canvas blobs、视频 runtime、Nginx 和 provider 私密配置均未上传或覆盖；新环境继承同一持久路径和图片队列 `最大 10 / 初始 6`，并删除旧媒体例外变量，以架构切割后的真实审计结果解锁 RW。
+- 目标 Linux 最终源码通过主服务 `860 tests / OK / 1 approved skip`、sidecar `160/160`、Node 22.19 `138/138`。release verifier 为 Phase 0 `fdfef74c2c107f39fdf6a83bf7fbad4adf59db5f93955911df291af194ea1a41`、ESM `65 modules / 358 edges`、closure `f3caebb0298a8d1570161fd43d4e59bf09ff50f6291878016297bdf3b53380ca`、canvas `63 files / 1,772,848 bytes / e5268fb1907d2397e887491bec0045a053d48c6f05b0af000ea8e0292b565e34`、runtime `65 files / 3,384,871 bytes / fb26554e01abb219bc1cdc7eb2c5c29211317218e222279084c289a99eed4038`。
+- 隔离真实 provider 先以 `Token Plan` 与 `百度千帆 Token Plan` 两种称呼生成两套标题正文、四张提示词卡和图片 `4/4`；随后两个隔离团队并发两轮完成批量图文 `10/10`、无限画布 `6/6`、AI 选题 `12/12`。16 张复杂联测图片全部双异形/透明参考图 `usedRefs=2 / skippedRefs=0`，内容哈希唯一，幂等重放复用既有终态，跨 owner `8/8` 返回 404，`unknownOutcome=false`。候选进程已停止，未写入生产测试账号或媒体。
+- 切流前 fresh SQLite v2 保护点为 `/data/dumate-studio/backups/v1436-final-pre-switch-20260817T145704Z`，manifest SHA-256 `0cab74906d72c252f39533257a9fb122a412d3f051920d6bac42114ae2b06bbf`，数据库 SHA-256 `a77ff46ac4c0c630e9af42ae1d5ffa2fb29cc0345f8bf705a243fae076008938`，逻辑 SHA-256 `51efe99cf8b3c09aba66166b4711128a90d6e978021c0ebda8a28f88ef7a6409`。逐字节一致 restore drill 通过 `quick_check=ok / 48 tables / 95,716 rows`；v143.5 单元、路由和私密环境回滚集位于 `/data/dumate-studio/deployment-backups/v1436-final-pre-switch-20260817T145704Z`。
+- 切流后公网 root/health/OpenAPI/main.js 连续 `20/20`，入口脚本与产品 seed 均和 release SHA 一致；冷浏览器加载完整 v143.6 DOM、灵感媒体和精确 cache identity，无横向溢出，只有游客态 `/api/members/me` 的预期 401。readiness 保持 `ready=true / writeReady=true / startupVerified=true / blockers=[]`，新旧服务均 active 且 `NRestarts=0`，无新增 critical/traceback/5xx。SQLite 保持 `quick_check=ok / 48 tables`、总行数 `95,716→95,717`，逐表、逐 collection 和五类媒体文件/字节均无减少。
 
 ### 本版范围
 
@@ -8,7 +17,7 @@
 - 产品事实覆盖个人版/企业版口径、每日 `21:00–次日 08:00` 夜享时段、指定四款模型 `2 折`、个人版 Token 与企业版 Credits 边界、额度档位、双协议接入、工具兼容和 DeepSeek-V4-Flash-0731 已确认参数；禁止把夜享扩写为全模型或永久优惠，也禁止把 Frontend Code Arena 写成第一。
 - 多词英文别名在产品匹配时保持完整，不再把 `Token Plan` 拆成泛化的 `Token` 与 `Plan`，避免普通英文文案误命中。产品目录同时声明内容品类和自然指代，Token Plan 使用“AI 模型订阅与算力套餐/这个套餐”，不落入旧的“桌面智能体”兜底。`baige` 与 `token-plan` 均由官方 seed 刷新陈旧副本，自定义产品继续原样保留。本版不新增数据库 schema、持久目录、后端生成 API、权限门禁、图片队列策略或批量图文/无限画布执行状态。
 - 零流量生产候选首次启动暴露了媒体生命周期耦合：视频工坊隐藏 `.candidate` 中间件被误当成正式媒体登记，清理后反向阻断新进程；无业务文档引用的陈旧 registry 行也被误当成业务缺失，已切分为审计告警；已迁移媒体的历史团队归属以登记时 scope 为准，不再被成员之后的团队关系重解释。真正被业务记录引用但文件缺失的媒体仍 fail closed，本版没有删除、改归属或伪造历史媒体。
-- release/cache 统一为 `20260817-v1436-token-plan-knowledge-2`。本地回归：主服务 `860 tests / OK / 1 approved skip`、视频 sidecar `160/160`、Node `138/138`；Token Plan 定向 `5/5`、图文相关 Python `47/47`，release verifier 已通过。目标 Linux 最终包、隔离真实 provider 复验和切流验收尚未完成，因此当前仍是本地候选，生产继续运行 v143.5。
+- release/cache 统一为 `20260817-v1436-token-plan-knowledge-2`。本地、目标 Linux、隔离真实 provider、公网与真实浏览器证据均已闭合；生产当前运行 v143.6，v143.5 保持在线代码回滚点。
 - 生产只读诊断未发现“曹同学无法给会话分组”的通用权限或服务端故障：同角色、同团队的另一曹姓账号已经存在多个持久分组，前端分组入口也没有角色门禁；报告账号只有一个未分组会话，更符合单浏览器旧缓存、侧栏折叠或本地状态个例，本版不为该个例改动稳定生产链路。
 
 ## v143.5 - 2026-08-15（生产：AI 选题部分结果持久化与缺项补生成）
