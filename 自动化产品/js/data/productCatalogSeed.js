@@ -106,6 +106,8 @@ export const PRODUCT_CATALOG_SEED = [
       "夜享Tokens加赠计划"
     ],
     category: "AI 模型订阅与算力套餐",
+    contentCategoryLabel: "AI 模型订阅与算力套餐",
+    contentAliases: ["Token Plan", "AI 模型订阅", "算力套餐", "这个套餐"],
     brief: [
       "百度千帆 Token Plan 是面向个人开发者、AI 重度用户与企业团队的 AI 模型订阅和算力套餐，包含个人版与企业版。个人版定位为“个人的 AI 算力流量包”，在 Coding Plan 基础上升级为灵活额度、全场景通用、按需消耗的 Token 量包；企业版定位为企业级 AI 生产力订阅服务，采用“席位制 + 企业共享积分包”和 Credits 积分体系，支持统一采购、管理与运营。",
       "8 月 14 日起上线“夜享 Tokens 加赠计划”（简称夜享计划）：个人版与企业版全量有效订阅用户每天 21:00 至次日 08:00，在套餐内调用明确指定的 4 款模型时按 2 折消耗，约等于节省 80% 成本或获得约 5 倍调用量；无需申请、无需配置、订阅即享。个人版表述为 1 Token 抵 5 Tokens，企业版必须表述为 1 积分抵 5 积分。夜间 2 折只明确覆盖 GLM-5.2、DeepSeek-V4-Flash-0731、DeepSeek-V4-Pro、DeepSeek-V4-Flash-0423，不得扩大到其他模型。",

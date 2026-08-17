@@ -410,6 +410,8 @@ function stripVisibleTextLabels(text = "") {
 
 function genericProductLabel(product = null) {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""} ${product?.category || ""}`;
+  const declaredLabel = sanitizeProduct(product?.contentCategoryLabel || "");
+  if (declaredLabel) return declaredLabel;
   if (/baige|百舸|AI\s*Infra/i.test(text)) return "具身智能 AI Infra";
   if (/miaoda|秒哒/i.test(text)) return "AI应用搭建工具";
   if (/dumate|百度搭子|搭子|桌面智能体/i.test(text)) return "桌面智能体";
@@ -1107,9 +1109,14 @@ function copyProductBrief(product) {
   const brief = sanitizeProduct(p.brief || "");
   const verified = (p.verifiedFacts || []).slice(0, 5).map(x => sanitizeProduct(x)).join("；");
   const forbidden = (p.forbiddenClaims || []).slice(0, 3).map(x => sanitizeProduct(x)).join("；");
-  const categoryAliases = p.id === "baige"
-    ? `${label}、具身智能工具链、这个平台`
-    : `${label}、AI工具、桌面智能体、这个工具`;
+  const declaredAliases = [...new Set((p.contentAliases || [])
+    .map(x => sanitizeProduct(x))
+    .filter(Boolean))];
+  const categoryAliases = declaredAliases.length
+    ? [label, ...declaredAliases].filter((value, index, values) => values.indexOf(value) === index).join("、")
+    : p.id === "baige"
+      ? `${label}、具身智能工具链、这个平台`
+      : `${label}、AI工具、桌面智能体、这个工具`;
   return `【发布文案轻量产品事实】
 当前主产品：${name}。标题、正文和标签可以自然出现当前主产品名；如果用户主题里有同类/竞品产品名，按对比、联动或替换关系自然处理。
 品类指代：${categoryAliases}。
